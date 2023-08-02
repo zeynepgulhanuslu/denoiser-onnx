@@ -1,11 +1,14 @@
 import io
 import os
 import time
+import zipfile
+
+import librosa
+import numpy as np
 import onnxruntime
 import torch
 import torchaudio
-import zipfile
-import json
+
 
 # torch-> numpy dönüşümü
 def to_numpy(tensor):
@@ -17,6 +20,7 @@ def to_numpy(tensor):
 
 def write(wav, filename, sr=16_000):
     # Normalize audio if it prevents clipping
+
     wav = wav / max(wav.abs().max().item(), 1)
     torchaudio.save(filename, wav.cpu(), sr)
 
@@ -45,11 +49,11 @@ def is_zip_file(file_path):
 def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
     # Bu kısmın iyileştirme yapıp yapmadığına emin değilim.
     session_options = onnxruntime.SessionOptions()
-    session_options.intra_op_num_threads = 5
-    session_options.inter_op_num_threads = 5
+    session_options.intra_op_num_threads = 1
+    session_options.inter_op_num_threads = 1
     session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session_options.enable_profiling=True
-    session_options.profile_file_prefix = "profile_streamtt_5thread"
+    session_options.enable_profiling = False
+    session_options.profile_file_prefix = "profile_streamtt_1thread"
     # onnx runtime session oluşturulması
     if is_zip_file(onnx_tt_quantized_model_path):
         model_bytes = load_onnx_from_zip(onnx_tt_model_path)
@@ -110,7 +114,7 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
         # frame length sabit olacak
         while frames.shape[1] >= frame_length:
             frame = frames[:, :frame_length]  # burada ses dosyasının bir kısmı alınır. streaming simulasyonu.
-
+            print(f"frame shape:{frame.shape}")
             # onnx modelinin giriş değerleri.
             input_values = {
                 input_audio_frame_name: to_numpy(frame),
@@ -178,18 +182,18 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
     # Run the model
     prof = ort_session.end_profiling()
 
-
-
     average_inference_time = total_inference_time / total_frame
     print(f"average inference time in ms: {average_inference_time:.6f}")
     print(f"average rtf : {average_inference_time / frame_in_ms:.6f}")
-    write(estimate, out_file, sr=16000)  # wav dosyası olarak yazılır.
+    enhanced = estimate / max(estimate.abs().max().item(), 1)
+    np_enhanced = np.squeeze(enhanced.detach().squeeze(0).cpu().numpy())
+    write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
 
 
 if __name__ == '__main__':
-    onnx_tt_quantized_model_path = 'dns48_streamtt_quantized.onnx'  # zip modeli kullanmak isterseniz.
-    audio_file = 'sample.wav'
-    out_file = 'sample_streamtt_48_quantized.wav'
+    onnx_tt_quantized_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/dns48_pretrained_buffer=480_streamtt.onnx'  # zip modeli kullanmak isterseniz.
+    audio_file = 'D:/zeynep/data/noise-cancelling/romeda/spk1_M_37/spk1_M_35-16k/spk1_truck1_noise_amplified.wav'
+    out_file = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/spk1_truck1_noise_amplified_clean.wav'
 
     noisy, sr = torchaudio.load(str(audio_file))
 

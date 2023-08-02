@@ -3,3 +3,5 @@ torch
 onnxruntime==1.10.0
 numpy==1.21.6
 librosa
+tflite_runtime
+denoiser
