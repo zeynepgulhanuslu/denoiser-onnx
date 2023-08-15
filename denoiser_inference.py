@@ -12,8 +12,10 @@ import torch.autograd.profiler as profiler
 
 
 def to_numpy(tensor):
-    return tensor.detach().cpu().numpy()
-
+    if torch.is_tensor(tensor):
+        return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
+    else:
+        return tensor
 
 # this function initialize model from file.
 def init_denoiser_model_from_file(model_file):

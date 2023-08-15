@@ -46,7 +46,7 @@ def is_zip_file(file_path):
     return file_extension.lower() == ".zip"
 
 
-def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
+def test_audio_denoising(noisy, onnx_tt_model_path, hidden, depth=4):
     # Bu kısmın iyileştirme yapıp yapmadığına emin değilim.
     session_options = onnxruntime.SessionOptions()
     session_options.intra_op_num_threads = 1
@@ -73,22 +73,35 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
     lstm_state_2_name = ort_session.get_inputs()[6].name
 
     # conv state leri 9 tane tensor den oluşan bir array dir. Burada size ları belirtilmiştir.
-    conv_state_sizes = [
-        (1, hidden, 596),
-        (1, hidden * 2, 148),
-        (1, hidden * 4, 36),
-        (1, hidden * 8, 8),
-        (1, hidden * 8, 4),
-        (1, hidden * 4, 4),
-        (1, hidden * 2, 4),
-        (1, hidden, 4),
-        (1, 1, 4)
-    ]
+    if depth == 4:
+
+        conv_state_sizes = [
+            (1, hidden, 148),
+            (1, hidden * 2, 36),
+            (1, hidden * 4, 8),
+            (1, hidden * 4, 4),
+            (1, hidden * 2, 4),
+            (1, hidden, 4),
+            (1, 1, 4)
+        ]
+    else:
+        conv_state_sizes = [
+            (1, hidden, 596),
+            (1, hidden * 2, 148),
+            (1, hidden * 4, 36),
+            (1, hidden * 8, 8),
+            (1, hidden * 8, 4),
+            (1, hidden * 4, 4),
+            (1, hidden * 2, 4),
+            (1, hidden, 4),
+            (1, 1, 4)
+        ]
 
     conv_state_list = [torch.zeros(size) for size in conv_state_sizes]  # içeriği sıfır olan torch array oluşturulur.
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
-    lstm_state_1 = torch.randn(2, 1, hidden * 16)
-    lstm_state_2 = torch.randn(2, 1, hidden * 16)
+
+    lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
+    lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     frame_num = torch.tensor([1])  # frame numarası
     resample_input_frame = torch.zeros(1, resample_buffer)
     resample_out_frame = torch.zeros(1, resample_buffer)
@@ -132,6 +145,9 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
                                    out_conv, out_lstm_1, out_lstm_2], input_values)
             end_time = time.time()
             inference_time = (end_time - start_time) * 1000
+            if inference_time > 0.1:
+                total_frame += 1
+
             total_inference_time += inference_time
             rtf = inference_time / frame_in_ms
             print(f"inference time in ms for frame {total_frame + 1}, noisy frame in ms: {frame_in_ms}, "
@@ -148,7 +164,6 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
             outs.append(torch.from_numpy(output_np))
             frames = frames[:, stride:]  # bir sonraki frame e gidilir.
             frame_num.add_(1)  # frame sayısı arttırlır.
-            total_frame += 1
 
         # en sonda frame length den küçük kısım kaldıysa, orası da işlenir.
         if frames.shape[1] > 0:
@@ -176,7 +191,9 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
             print(f"inference time in ms for frame {total_frame + 1}, frame in ms: {frame_in_ms}, "
                   f"{inference_time} ms. rtf: {rtf}")
             outs.append(torch.from_numpy(out[0]))
-            total_frame += 1
+
+            if inference_time > 0.1:
+                total_frame += 1
 
         estimate = torch.cat(outs, 1)  # burada çıkıştaki tensor ler bir torch tensor üne dönüştürülür.
     # Run the model
@@ -191,16 +208,42 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden):
 
 
 if __name__ == '__main__':
-    onnx_tt_quantized_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/dns48_pretrained_buffer=480_streamtt.onnx'  # zip modeli kullanmak isterseniz.
-    audio_file = 'D:/zeynep/data/noise-cancelling/romeda/spk1_M_37/spk1_M_35-16k/spk1_truck1_noise_amplified.wav'
-    out_file = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/spk1_truck1_noise_amplified_clean.wav'
+    root = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/'
+    onnx_tt_quantized_model_path = root + "dns36_depth=5_stream.onnx"
+    noisy_audio = 'sample.wav'
+    out_dir = 'sample-out'
 
-    noisy, sr = torchaudio.load(str(audio_file))
+    hidden = 36
+    depth = 5
 
-    # aşağıdaki değerler değişmeyecek.
-    frame_length = 661
-    stride = 256
-    resample_buffer = 256
-    hidden = 48
+    if depth == 4:
+        frame_length = 480
+        resample_buffer = 64
+        stride = 64
+    else:
+        frame_length = 661  # depth = 5
+        resample_buffer = 256  # depth = 5
+        stride = 256  # depth = 5
 
-    test_audio_denoising(noisy, onnx_tt_quantized_model_path, hidden)
+    if not os.path.exists(out_dir):
+        os.mkdir(out_dir)
+
+    if os.path.isfile(noisy_audio):
+        noisy, sr = torchaudio.load(str(noisy_audio))
+        name = os.path.basename(noisy_audio)
+        out_file = os.path.join(out_dir, name)
+        # noisy, sr = torchaudio.load(str(audio_file))
+        print(f"inference starts for {noisy_audio}")
+
+        test_audio_denoising(noisy, onnx_tt_quantized_model_path, hidden, depth)
+    else:
+        noisy_files = librosa.util.find_files(noisy_audio, ext='wav')
+        for noisy_f in noisy_files:
+            name = os.path.basename(noisy_f)
+            out_file = os.path.join(out_dir, name)
+            noisy, sr = torchaudio.load(str(noisy_f))
+            print(f"inference starts for {noisy_f}")
+
+            test_audio_denoising(noisy, onnx_tt_quantized_model_path, hidden, depth)
+
+            print(f"inference done for {noisy_f}.")

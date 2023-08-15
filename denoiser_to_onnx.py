@@ -6,11 +6,11 @@ import torch
 from denoiser.pretrained import dns64, dns48
 from denoiser.utils import deserialize_model
 
-
+# pretrained model
 def convert_dns48():
     model = dns48()
     model.eval()
-    input_tensor = torch.randn(1, 1, 1024)  # this is the correct level
+    input_tensor = torch.randn(1, 1, 1024)
 
     with torch.no_grad():
         # Export the model
@@ -25,11 +25,11 @@ def convert_dns48():
                                         'output': {0: 'batch_size', 1: 'channel', 2: 'sequence_length'}}
                           )
 
-
+# pretrained model
 def convert_dns64():
     model = dns64()
     model.eval()
-    input_tensor = torch.randn(1, 1, 1024)  # this is the correct level
+    input_tensor = torch.randn(1, 1, 1024)
 
     with torch.no_grad():
         # Export the model
@@ -62,7 +62,7 @@ def init_denoiser_model_from_file(model_file):
 def convert_to_onnx_from_path(model_file, onnx_model_path):
     model = init_denoiser_model_from_file(model_file)
     model.eval()
-    input_tensor = torch.randn(1, 1, 1024)  # this is the correct level
+    input_tensor = torch.randn(1, 1, 512)  # this is the correct level
     with torch.no_grad():
         # Export the model
         torch.onnx.export(model,  # model being run
@@ -120,13 +120,12 @@ def compare_model(onnx_path, model_path, input_array):
 
 
 if __name__ == '__main__':
-    torch_model_file = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=64-depth=4/best.th'
-    onnx_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=64-depth=4/dns64_depth=4_buffer=480.onnx'
+    torch_model_file = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/best.th'
+    onnx_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/dns36_depth=5.onnx'
     convert_to_onnx_from_path(torch_model_file, onnx_model_path)
 
     model = init_denoiser_model_from_file(torch_model_file)
-    # convert_dns48()
-    # model = dns48()
+
     model.eval()
 
     input_array = torch.randn(1, 1, 480)
@@ -146,6 +145,6 @@ if __name__ == '__main__':
     ort_outs = ort_session.run(None, ort_inputs)
     print(ort_outs[0].shape, torch_out.shape)
     # compare ONNX Runtime and PyTorch results
-    np.testing.assert_allclose(to_numpy(torch_out), ort_outs[0], rtol=1e-02, atol=1e-06)
+    np.testing.assert_allclose(to_numpy(torch_out), ort_outs[0], rtol=1e-03, atol=1e-06)
 
     print("Exported model has been tested with ONNXRuntime, and the result looks good!")

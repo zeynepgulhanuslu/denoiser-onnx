@@ -149,22 +149,35 @@ class DemucsOnnxStreamerTT(nn.Module):
         next_state = []
 
         hidden = self.demucs.hidden
+        depth = self.demucs.depth
+        if depth == 4:
 
-        conv_state_sizes = [
-            # (1, hidden, 596),
-            (1, hidden * 2, 148),
-            (1, hidden * 4, 36),
-            (1, hidden * 8, 8),
-            (1, hidden * 8, 4),
-            (1, hidden * 4, 4),
-            (1, hidden * 2, 4),
-            (1, hidden, 4),
-            (1, 1, 4)
-        ]
+            conv_state_sizes = [
+                (1, hidden, 148),
+                (1, hidden * 2, 36),
+                (1, hidden * 4, 8),
+                (1, hidden * 4, 4),
+                (1, hidden * 2, 4),
+                (1, hidden, 4),
+                (1, 1, 4)
+            ]
+        else:
+            conv_state_sizes = [
+                (1, hidden, 596),
+                (1, hidden * 2, 148),
+                (1, hidden * 4, 36),
+                (1, hidden * 8, 8),
+                (1, hidden * 8, 4),
+                (1, hidden * 4, 4),
+                (1, hidden * 2, 4),
+                (1, hidden, 4),
+                (1, 1, 4)
+            ]
         conv_state_sizes_cumsum = [0]
         for size in conv_state_sizes:
             cumsum = conv_state_sizes_cumsum[-1] + np.prod(size)
             conv_state_sizes_cumsum.append(cumsum)
+
         conv_state_list = [conv_state[..., conv_state_sizes_cumsum[i]:conv_state_sizes_cumsum[i + 1]].view(size) for
                            i, size in enumerate(conv_state_sizes)]
 
@@ -182,7 +195,6 @@ class DemucsOnnxStreamerTT(nn.Module):
                 x = encode[1](x)
                 x = fast_conv(encode[2], x)
                 x = encode[3](x)
-                print(f"x shape 2:{x.shape}")
             else:
                 if not first:
                     prev = conv_state_list.pop(0)
@@ -191,16 +203,11 @@ class DemucsOnnxStreamerTT(nn.Module):
                     missing = tgt - prev.shape[-1]
                     offset = length - demucs.kernel_size - demucs.stride * (missing - 1)
                     x = x[..., offset:]
-                    print(f"x shape 3:{x.shape}")
                 x = encode[1](encode[0](x))
                 x = fast_conv(encode[2], x)
                 x = encode[3](x)
-                print(f"x shape 4:{x.shape}")
                 if not first:
-                    print(f"before cat {prev.shape}, {x.shape}")
                     x = torch.cat([prev, x], -1)
-                    print(f"after cat {x.shape}")
-                    print(f"x shape 5:{x.shape}")
                 next_state.append(x)
             skips.append(x)
 
@@ -255,22 +262,40 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
     streamer = DemucsOnnxStreamerTT(model, dry=0)
     depth = streamer.demucs.depth
     streamer.eval()
-    print(streamer.total_length, streamer.resample_buffer, streamer.stride)
-    x = torch.randn(1, streamer.total_length)
+    print(f"total length: {streamer.total_length},"
+          f"resample buffer: {streamer.resample_buffer} , "
+          f"stride: {streamer.stride},"
+          f"depth: {depth}",
+          f"hidden: {streamer.demucs.hidden}")
+
+    # x = torch.randn(1, streamer.total_length)
+    x = torch.randn(1, 1024)
     frame_num = torch.tensor([2])
     hidden = streamer.demucs.hidden
-    # depth 4 olunca ilk conv state olmuyor.
-    conv_state_sizes = [
-        # (1, hidden, 596),
-        (1, hidden * 2, 148),
-        (1, hidden * 4, 36),
-        (1, hidden * 8, 8),
-        (1, hidden * 8, 4),
-        (1, hidden * 4, 4),
-        (1, hidden * 2, 4),
-        (1, hidden, 4),
-        (1, 1, 4)
-    ]
+
+    if depth == 4:
+        conv_state_sizes = [
+            (1, hidden, 148),
+            (1, hidden * 2, 36),
+            (1, hidden * 4, 8),
+            (1, hidden * 4, 4),
+            (1, hidden * 2, 4),
+            (1, hidden, 4),
+            (1, 1, 4)
+        ]
+    else:
+        conv_state_sizes = [
+            (1, hidden, 596),
+            (1, hidden * 2, 148),
+            (1, hidden * 4, 36),
+            (1, hidden * 8, 8),
+            (1, hidden * 8, 4),
+            (1, hidden * 4, 4),
+            (1, hidden * 2, 4),
+            (1, hidden, 4),
+            (1, 1, 4)
+        ]
+
     conv_state_list = [torch.randn(size) for size in conv_state_sizes]
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
     lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
@@ -292,12 +317,15 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
                           verbose=True,
                           opset_version=13,
                           input_names=input_names,
-                          output_names=output_names)
+                          output_names=output_names,
+                          dynamic_axes={'input': {0: 'channel', 1: 'sequence_length'},
+                                        # variable length axes
+                                        'output': {0: 'channel', 1: 'sequence_length'}})
 
 
 if __name__ == '__main__':
     # onnx_tt_model_path = 'dns48_depth=4_buffer=480_streamtt.onnx'
     # torch_model_path = 'best.th'
-    onnx_tt_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/dns48_depth=4_buffer=480_streamtt.onnx'
-    torch_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/best.th'
+    onnx_tt_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/dns36_depth=5_stream.onnx'
+    torch_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/best.th'
     convert_stream_model(onnx_tt_model_path, torch_model_path)

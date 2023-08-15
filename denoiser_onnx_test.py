@@ -299,15 +299,33 @@ def test_audio_denoising_with_fix_size_input(noisy, onnx_tt_model_path, block_le
 
 
 if __name__ == '__main__':
-    onnx_tt_quantized_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/dns48_pretrained_buffer=480.onnx'
+    onnx_tt_quantized_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/dns36_buffer=480.onnx'
     # zip modeli kullanmak isterseniz.
-    audio_file = 'D:/zeynep/data/noise-cancelling/romeda/spk1_M_37/spk1_M_35-16k/spk1_truck1_noise_amplified.wav'
-    out_file = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/spk1_truck1_noise_amplified.wav'
+    noisy_audio = 'D:/zeynep/data/noise-cancelling/romeda/records.30.05.2023-16k-test/noisy/'
+    out_dir = 'D:/zeynep/data/noise-cancelling/romeda/records.30.05.2023-16k-test/dns36-onnx-buffer=480/'
+    block_len = 480  # her bir frame uzunluğu
+    block_shift = 160  # shift uzunluğu
 
-    noisy, sr = torchaudio.load(str(audio_file))
-    # noisy, sr = torchaudio.load(str(audio_file))
-    print(noisy.shape)
-    block_len = 661  # her bir frame uzunluğu
-    block_shift = 256  # shift uzunluğu
-    test_audio_denoising_with_3sized_input(noisy, onnx_tt_quantized_model_path, block_len,
-                                           block_shift, sr, out_file)
+    if not os.path.exists(out_dir):
+        os.mkdir(out_dir)
+
+    if os.path.isfile(noisy_audio):
+        noisy, sr = torchaudio.load(str(noisy_audio))
+        name = os.path.basename(noisy_audio)
+        out_file = out_dir + name
+        print(f"inference starts for {noisy_audio}")
+
+        test_audio_denoising_with_3sized_input(noisy, onnx_tt_quantized_model_path, block_len,
+                                               block_shift, sr, out_file)
+    else:
+        noisy_files = librosa.util.find_files(noisy_audio, ext='wav')
+        for noisy_f in noisy_files:
+            name = os.path.basename(noisy_f)
+            out_file = out_dir + name
+            noisy, sr = torchaudio.load(str(noisy_f))
+            print(f"inference starts for {noisy_f}")
+
+            test_audio_denoising_with_3sized_input(noisy, onnx_tt_quantized_model_path, block_len,
+                                                   block_shift, sr, out_file)
+
+            print(f"inference done for {noisy_f}.")
