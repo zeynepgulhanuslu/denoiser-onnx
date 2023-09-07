@@ -1,3 +1,4 @@
+import argparse
 import math
 
 import numpy as np
@@ -74,7 +75,7 @@ class DemucsOnnxStreamerTT(nn.Module):
         pending_length = self.pending.shape[1]
         padding = torch.zeros(self.demucs.chin, self.total_length)
         frame_num = self.frames if self.frames != 0 else torch.tensor([1])
-        #variance = self.variance if self.variance != 0 else torch.tensor([0.0])
+        # variance = self.variance if self.variance != 0 else torch.tensor([0.0])
         out, frame_num, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
             self.forward(padding, frame_num, self.resample_in, self.resample_out, None, None)
 
@@ -94,7 +95,7 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.lstm_state = (lstm_state_1, lstm_state_2)
         self.conv_state = conv_state
         dry_signal = frame[:, :stride]
-        #self.variance = variance
+        # self.variance = variance
         if demucs.normalize:
             mono = frame.mean(0)
             variance = (mono ** 2).mean()
@@ -253,14 +254,15 @@ class DemucsOnnxStreamerTT(nn.Module):
         return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]
 
 
-def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False):
+def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False, opset_version=13):
     if use_dns_48:
         model = dns48()
     elif torch_model_path is not None:
         model = init_denoiser_model_from_file(torch_model_path)
-    else:
+    elif use_dns64:
         model = dns64()
-
+    else:
+        model = dns48()
     model.eval()
     streamer = DemucsOnnxStreamerTT(model, dry=0)
     depth = streamer.demucs.depth
@@ -319,7 +321,7 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
                            conv_state, lstm_state_1, lstm_state_2),
                           onnx_tt_model_path,
                           verbose=True,
-                          opset_version=13,
+                          opset_version=opset_version,
                           input_names=input_names,
                           output_names=output_names,
                           dynamic_axes={'input': {0: 'channel', 1: 'sequence_length'},
@@ -328,8 +330,19 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
 
 
 if __name__ == '__main__':
-    # onnx_tt_model_path = 'dns48_depth=4_buffer=480_streamtt.onnx'
-    # torch_model_path = 'best.th'
-    onnx_tt_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/dns48_depth=4_stream_variance.onnx'
-    torch_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/best.th'
-    convert_stream_model(onnx_tt_model_path, torch_model_path)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-t', '--torch_model', type=str, required=True, help='Torch model file')
+    parser.add_argument('-o', '--onnx_model', type=str, required=True, help='Onnx model path')
+    parser.add_argument('-dns48', type=bool, required=False, default=False,
+                        help='True if you want to convert pre-trained dns48 model.')
+    parser.add_argument('-dns64', type=bool, required=False, default=False,
+                        help='True if you want to convert pre-trained dns64 model.')
+    parser.add_argument('-opset', type=int, required=False, default=13,
+                        help='onnx export opset version.')
+    args = parser.parse_args()
+    torch_model_path = args.torch_model
+    onnx_tt_model_path = args.onnx_model
+    use_dns48 = args.dns48
+    use_dns64 = args.dns64
+    opset_version = args.opset
+    convert_stream_model(onnx_tt_model_path, torch_model_path, use_dns48, use_dns64, opset_version)
