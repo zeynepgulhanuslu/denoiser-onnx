@@ -299,10 +299,10 @@ def test_audio_denoising_with_fix_size_input(noisy, onnx_tt_model_path, block_le
 
 
 if __name__ == '__main__':
-    onnx_tt_quantized_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/dns36_buffer=480.onnx'
+    onnx_tt_quantized_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/dns48_depth=4.onnx'
     # zip modeli kullanmak isterseniz.
-    noisy_audio = 'D:/zeynep/data/noise-cancelling/romeda/records.30.05.2023-16k-test/noisy/'
-    out_dir = 'D:/zeynep/data/noise-cancelling/romeda/records.30.05.2023-16k-test/dns36-onnx-buffer=480/'
+    noisy_audio = 'D:/zeynep/data/noise-cancelling/DNS-Challenge/test-set/noisy_testset_wav_16k'
+    out_dir = 'D:/zeynep/data/noise-cancelling/DNS-Challenge/test-set/dns48-depth=4-batch-onnx/'
     block_len = 480  # her bir frame uzunluğu
     block_shift = 160  # shift uzunluğu
 

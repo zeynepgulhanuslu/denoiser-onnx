@@ -1,3 +1,4 @@
+import argparse
 import os
 import time
 
@@ -19,7 +20,7 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
     frames_input = torch.tensor([1])
     frame_num = torch.tensor([1])
     depth = streamer.demucs.depth
-    
+
     lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     print(f"lstm state : {lstm_state_1.shape}, {lstm_state_2.shape}")
@@ -102,7 +103,6 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
             last_frame = torch.cat([frames, torch.zeros_like(frames)
             [:, :frame_length - frames.shape[1]]], dim=1)
 
-
             start_time = time.time()
             out_frame, next_frame_num, next_resample_in, next_resample_out, next_conv_state, next_lstm_state_1, next_lstm_state_2 \
                 = streamer.forward(last_frame, to_numpy(frame_num), resample_input_frame, resample_out_frame,
@@ -129,41 +129,61 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
 
 
 if __name__ == '__main__':
-    root = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=64-depth=4/'
-    torch_model_path = root + "best.th"
+    parser = argparse.ArgumentParser()
 
-    noisy_audio = 'sample.wav'
-    out_dir = 'sample-out'
+    parser.add_argument('--model', type=str, required=True, help='model file')
+    parser.add_argument('--noisy_audio', type=str, required=True, help='noisy directory')
+    parser.add_argument('--out_dir', type=str, required=True, help='out directory')
+    parser.add_argument('--stride', type=int, required=False, default=128, help='Stride value')
+    parser.add_argument('--hidden', type=int, required=False, default=48, help='Hidden value')
+    parser.add_argument('--depth', type=int, required=False, default=4, help='depth value')
+    parser.add_argument('--frame_length', type=int, required=False, default=480, help='frame length value')
+    parser.add_argument('--resample_buffer', type=int, required=False, default=64, help='resample buffer value')
 
-    hidden = 64
-    depth = 4
+    args = parser.parse_args()
 
+    model_file = args.model
+    noisy_audio = args.noisy_audio
+    out_dir = args.out_dir
+    hidden = args.hidden
+    depth = args.depth
+    frame_length = args.frame_length
+    resample_buffer = args.resample_buffer
+    stride = args.stride
+    '''
     if depth == 4:
         frame_length = 480
         resample_buffer = 64
-        stride = 64
+        stride = 256
     else:
-        frame_length = 661  # depth = 5
-        resample_buffer = 256  # depth = 5
-        stride = 256  # depth = 5
-
-    if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
-
+        frame_length = 661  # depth = 5 -> 661
+        resample_buffer = 256  # depth = 5 -> 256
+        stride = 256   # depth = 5  -> 256
+    '''
     if os.path.isfile(noisy_audio):
         noisy, sr = torchaudio.load(str(noisy_audio))
         name = os.path.basename(noisy_audio)
-        out_file = os.path.join(out_dir, name)
+        if out_dir.endswith('.wav'):
+            parent_dir = os.path.dirname(out_dir)
+            if not os.path.exists(parent_dir):
+                os.mkdir(parent_dir)
+            out_file = out_dir
+        else:
+            if not os.path.exists(out_dir):
+                os.mkdir(out_dir)
+            out_file = os.path.join(out_dir, name)
         # noisy, sr = torchaudio.load(str(audio_file))
         print(f"inference starts for {noisy_audio}")
-        test_audio_denoising(torch_model_path,noisy, frame_length, hidden, depth)
+        test_audio_denoising(model_file, noisy, frame_length, hidden, depth)
 
     else:
         noisy_files = librosa.util.find_files(noisy_audio, ext='wav')
+        if not os.path.exists(out_dir):
+            os.mkdir(out_dir)
         for noisy_f in noisy_files:
             name = os.path.basename(noisy_f)
             out_file = os.path.join(out_dir, name)
             noisy, sr = torchaudio.load(str(noisy_f))
             print(f"inference starts for {noisy_f}")
-            test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth)
+            test_audio_denoising(model_file, noisy, frame_length, hidden, depth)
             print(f"inference done for {noisy_f}.")

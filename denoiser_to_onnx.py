@@ -6,6 +6,7 @@ import torch
 from denoiser.pretrained import dns64, dns48
 from denoiser.utils import deserialize_model
 
+
 # pretrained model
 def convert_dns48():
     model = dns48()
@@ -24,6 +25,7 @@ def convert_dns48():
                                         # variable length axes
                                         'output': {0: 'batch_size', 1: 'channel', 2: 'sequence_length'}}
                           )
+
 
 # pretrained model
 def convert_dns64():

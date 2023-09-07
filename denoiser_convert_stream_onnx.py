@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import onnx
 import torch
 from denoiser.demucs import fast_conv
 from denoiser.pretrained import dns48, dns64
@@ -73,12 +74,13 @@ class DemucsOnnxStreamerTT(nn.Module):
         pending_length = self.pending.shape[1]
         padding = torch.zeros(self.demucs.chin, self.total_length)
         frame_num = self.frames if self.frames != 0 else torch.tensor([1])
-        out, frame_num, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
-            self.forward(padding, frame_num, self.resample_in, self.resample_out, None, None)
+        variance = self.variance if self.variance != 0 else torch.tensor([0.0])
+        out, frame_num, variance, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
+            self.forward(padding, frame_num, variance, self.resample_in, self.resample_out,  None, None)
 
         return out[:, :pending_length]
 
-    def forward(self, frame, frame_num, resample_input_frame, resample_out_frame,
+    def forward(self, frame, frame_num, variance, resample_input_frame, resample_out_frame,
                 conv_state=None, lstm_state_1=None, lstm_state_2=None):
         """
         Apply the model to mix using true real-time evaluation.
@@ -92,12 +94,12 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.lstm_state = (lstm_state_1, lstm_state_2)
         self.conv_state = conv_state
         dry_signal = frame[:, :stride]
-
+        self.variance = variance
         if demucs.normalize:
             mono = frame.mean(0)
-            variance = (mono ** 2).mean()
-            self.variance = variance / self.frames + (1 - 1 / self.frames) * self.variance
-            frame = frame / (demucs.floor + math.sqrt(self.variance))
+            variance_val = (mono ** 2).mean()
+            self.variance = variance_val / self.frames + (1 - 1 / self.frames) * self.variance
+            frame = frame / (demucs.floor + torch.sqrt(self.variance))
 
         self.resample_in = resample_input_frame
         padded_frame = torch.cat([self.resample_in, frame], dim=-1)
@@ -136,12 +138,13 @@ class DemucsOnnxStreamerTT(nn.Module):
         out = out[:, :stride]
 
         if demucs.normalize:
-            out *= math.sqrt(self.variance)
+            out *= torch.sqrt(self.variance)
 
         out = self.dry * dry_signal + (1 - self.dry) * out
         self.conv_state = new_conv_state
 
-        return out, frame_num, self.resample_in, self.resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2
+        return out, frame_num, self.variance, self.resample_in, self.resample_out, new_conv_state, \
+               new_lstm_state_1, new_lstm_state_2
 
     def _separate_frame(self, frame, conv_state=None, lstm_state_1=None, lstm_state_2=None):
         demucs = self.demucs
@@ -270,7 +273,10 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
 
     # x = torch.randn(1, streamer.total_length)
     x = torch.randn(1, 1024)
+
     frame_num = torch.tensor([2])
+    variance = torch.tensor([2.0])
+
     hidden = streamer.demucs.hidden
 
     if depth == 4:
@@ -298,24 +304,26 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
 
     conv_state_list = [torch.randn(size) for size in conv_state_sizes]
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
+    #conv_state = conv_state.to(torch.double)  # Using .to() method
+
     lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     resample_input_frame = torch.randn(1, streamer.resample_buffer)
     resample_out_frame = torch.randn(1, streamer.resample_buffer)
-
+    print(streamer.resample_buffer)
     with torch.no_grad():
-        input_names = ['input', 'frame_num', 'resample_input_frame', 'resample_out_frame',
+        input_names = ['input', 'frame_num', 'variance', 'resample_input_frame', 'resample_out_frame',
                        'conv_state', 'lstm_state_1', 'lstm_state_2']
 
-        output_names = ['output', 'frame_num', 'resample_input_frame',
+        output_names = ['output', 'frame_num', 'variance', 'resample_input_frame',
                         'resample_out_frame', 'conv_state', 'lstm_state_1', 'lstm_state_2']
 
         torch.onnx.export(streamer,
-                          (x, frame_num, resample_input_frame, resample_out_frame,
+                          (x, frame_num, variance, resample_input_frame, resample_out_frame,
                            conv_state, lstm_state_1, lstm_state_2),
                           onnx_tt_model_path,
                           verbose=True,
-                          opset_version=13,
+                          opset_version=17,
                           input_names=input_names,
                           output_names=output_names,
                           dynamic_axes={'input': {0: 'channel', 1: 'sequence_length'},
@@ -326,6 +334,6 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
 if __name__ == '__main__':
     # onnx_tt_model_path = 'dns48_depth=4_buffer=480_streamtt.onnx'
     # torch_model_path = 'best.th'
-    onnx_tt_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/dns36_depth=5_stream.onnx'
-    torch_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/best.th'
+    onnx_tt_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/dns48_depth=4_stream_variance.onnx'
+    torch_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/best.th'
     convert_stream_model(onnx_tt_model_path, torch_model_path)
