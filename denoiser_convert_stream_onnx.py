@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import onnx
+import onnxruntime
 import torch
 from denoiser.demucs import fast_conv
 from denoiser.pretrained import dns48, dns64
@@ -254,7 +255,8 @@ class DemucsOnnxStreamerTT(nn.Module):
         return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]
 
 
-def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False, opset_version=13):
+def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False,
+                         opset_version=13):
     if use_dns_48:
         model = dns48()
     elif torch_model_path is not None:
@@ -339,6 +341,7 @@ if __name__ == '__main__':
                         help='True if you want to convert pre-trained dns64 model.')
     parser.add_argument('-opset', type=int, required=False, default=13,
                         help='onnx export opset version.')
+
     args = parser.parse_args()
     torch_model_path = args.torch_model
     onnx_tt_model_path = args.onnx_model
@@ -346,3 +349,8 @@ if __name__ == '__main__':
     use_dns64 = args.dns64
     opset_version = args.opset
     convert_stream_model(onnx_tt_model_path, torch_model_path, use_dns48, use_dns64, opset_version)
+    
+    ort_session = onnxruntime.InferenceSession(onnx_tt_model_path)
+    
+    print(f'ort session inputs : {ort_session.get_inputs()}')
+    print(f'ort session outputs : {ort_session.get_outputs()}')
