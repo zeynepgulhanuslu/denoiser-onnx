@@ -216,7 +216,7 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden, depth=4):
 
 if __name__ == '__main__':
     root = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/'
-    onnx_tt_quantized_model_path = root + "dns48_depth=4_stream_opset=11.onnx"
+    onnx_tt_quantized_model_path = root + "dns48_depth=4_stream_variance.onnx"
     noisy_audio = 'sample.wav'
     out_dir = 'sample-out'
 
