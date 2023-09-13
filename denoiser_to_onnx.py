@@ -18,7 +18,7 @@ def convert_dns48():
         torch.onnx.export(model,  # model being run
                           input_tensor,  # model input (or a tuple for multiple inputs)
                           onnx_model_path,  # where to save the model (can be a file or file-like object)
-                          opset_version=11,
+                          opset_version=15,
                           input_names=['input'],  # the model's input names
                           output_names=['output'],  # the model's output names
                           dynamic_axes={'input': {0: 'batch_size', 1: 'channel', 2: 'sequence_length'},
@@ -64,13 +64,13 @@ def init_denoiser_model_from_file(model_file):
 def convert_to_onnx_from_path(model_file, onnx_model_path):
     model = init_denoiser_model_from_file(model_file)
     model.eval()
-    input_tensor = torch.randn(1, 1, 512)  # this is the correct level
+    input_tensor = torch.randn(1, 1, 512, dtype=torch.float32)  # this is the correct level
     with torch.no_grad():
         # Export the model
         torch.onnx.export(model,  # model being run
                           input_tensor,  # model input (or a tuple for multiple inputs)
                           onnx_model_path,  # where to save the model (can be a file or file-like object)
-                          opset_version=11,
+                          opset_version=15,
                           input_names=['input'],  # the model's input names
                           output_names=['output'],  # the model's output names
                           dynamic_axes={'input': {0: 'batch_size', 1: 'channel', 2: 'sequence_length'},
@@ -122,14 +122,15 @@ def compare_model(onnx_path, model_path, input_array):
 
 
 if __name__ == '__main__':
-    torch_model_file = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/best.th'
-    onnx_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=36/dns36_depth=5.onnx'
+    torch_model_file = 'D:/zeynep/data/noise-cancelling/denoiser/dns/hidden=48-depth=4/best.th'
+    onnx_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/continue_pretrained_dns48/dns48-torch2.onnx'
     convert_to_onnx_from_path(torch_model_file, onnx_model_path)
 
-    model = init_denoiser_model_from_file(torch_model_file)
-
+    #model = init_denoiser_model_from_file(torch_model_file)
+    #model.eval()
+    convert_dns48()
+    model = dns48()
     model.eval()
-
     input_array = torch.randn(1, 1, 480)
     # Load the ONNX model
     model_onnx = onnx.load(onnx_model_path)

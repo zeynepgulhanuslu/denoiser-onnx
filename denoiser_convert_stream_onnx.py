@@ -76,19 +76,19 @@ class DemucsOnnxStreamerTT(nn.Module):
         pending_length = self.pending.shape[1]
         padding = torch.zeros(self.demucs.chin, self.total_length)
         frame_num = self.frames if self.frames != 0 else torch.tensor([1])
-        # variance = self.variance if self.variance != 0 else torch.tensor([0.0])
-        out, frame_num, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
-            self.forward(padding, frame_num, self.resample_in, self.resample_out, None, None)
+        variance = self.variance if self.variance != 0 else torch.tensor([0.0])
+        out, frame_num, variance_out, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
+            self.forward(padding, frame_num, variance, self.resample_in, self.resample_out, None, None)
 
         return out[:, :pending_length]
 
-    def forward(self, frame, frame_num, resample_input_frame, resample_out_frame,
+    def forward(self, frame, frame_num, variance, resample_input_frame, resample_out_frame,
                 conv_state=None, lstm_state_1=None, lstm_state_2=None):
         """
         Apply the model to mix using true real-time evaluation.
         Normalization is done online, as is the resampling.
         """
-        self.frames = frame_num[0]
+        self.frames = frame_num
         demucs = self.demucs
         resample_buffer = self.resample_buffer
         stride = self.stride
@@ -96,13 +96,16 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.lstm_state = (lstm_state_1, lstm_state_2)
         self.conv_state = conv_state
         dry_signal = frame[:, :stride]
-        # self.variance = variance
+        self.variance = variance
         if demucs.normalize:
             mono = frame.mean(0)
-            variance = (mono ** 2).mean()
-            self.variance = variance / self.frames + (1 - 1 / self.frames) * self.variance
-            print(f'variance value:{variance:.2f}')
-            frame = frame / (demucs.floor + math.sqrt(self.variance))
+            variance_val = (mono ** 2).mean()
+            print(f'local variance val: {variance_val}')
+            print(f'self frames: {self.frames}')
+            print(f'(1 - 1 / self.frames): {(1 - 1 / self.frames)}')
+            print(f'(1 - 1 / self.frames) * self.variance: {(1 - 1 / self.frames) * self.variance}')
+            self.variance = variance_val / self.frames + (1 - 1 / self.frames) * self.variance
+            frame = frame / (demucs.floor + torch.sqrt(self.variance))
 
         self.resample_in = resample_input_frame
         padded_frame = torch.cat([self.resample_in, frame], dim=-1)
@@ -145,8 +148,8 @@ class DemucsOnnxStreamerTT(nn.Module):
 
         out = self.dry * dry_signal + (1 - self.dry) * out
         self.conv_state = new_conv_state
-
-        return out, frame_num, self.resample_in, self.resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2
+        return out, frame_num, self.variance, self.resample_in, self.resample_out, \
+               new_conv_state, new_lstm_state_1, new_lstm_state_2
 
     def _separate_frame(self, frame, conv_state=None, lstm_state_1=None, lstm_state_2=None):
         demucs = self.demucs
@@ -252,7 +255,10 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.conv_state = new_conv_state
         for cs in self.conv_state:
             print(cs.shape)
-        return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]
+        if first:
+            return x[0], extra[0], conv_state, new_lstm_state[0], new_lstm_state[1]
+        else:
+            return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]
 
 
 def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False,
@@ -278,7 +284,8 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
     # x = torch.randn(1, streamer.total_length)
     x = torch.randn(1, 1024)
 
-    frame_num = torch.tensor([2])
+    frame_num = torch.tensor([1])
+    variance_tensor = torch.tensor([0.0], dtype=torch.float32)
     hidden = streamer.demucs.hidden
 
     if depth == 4:
@@ -312,14 +319,14 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
     resample_out_frame = torch.randn(1, streamer.resample_buffer)
     print(streamer.resample_buffer)
     with torch.no_grad():
-        input_names = ['input', 'frame_num', 'resample_input_frame', 'resample_out_frame',
+        input_names = ['input', 'frame_num', 'variance', 'resample_input_frame', 'resample_out_frame',
                        'conv_state', 'lstm_state_1', 'lstm_state_2']
 
-        output_names = ['output', 'frame_num', 'resample_input_frame',
+        output_names = ['output', 'frame_num', 'variance', 'resample_input_frame',
                         'resample_out_frame', 'conv_state', 'lstm_state_1', 'lstm_state_2']
 
         torch.onnx.export(streamer,
-                          (x, frame_num, resample_input_frame, resample_out_frame,
+                          (x, frame_num, variance_tensor, resample_input_frame, resample_out_frame,
                            conv_state, lstm_state_1, lstm_state_2),
                           onnx_tt_model_path,
                           verbose=True,
@@ -328,7 +335,8 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
                           output_names=output_names,
                           dynamic_axes={'input': {0: 'channel', 1: 'sequence_length'},
                                         # variable length axes
-                                        'output': {0: 'channel', 1: 'sequence_length'}})
+                                        'output': {0: 'channel', 1: 'sequence_length'},
+                                        'conv_state': {0: 'conv_state.1_dim_0', 1: 'conv_state.1_dim_1'}})
 
 
 if __name__ == '__main__':
@@ -349,8 +357,3 @@ if __name__ == '__main__':
     use_dns64 = args.dns64
     opset_version = args.opset
     convert_stream_model(onnx_tt_model_path, torch_model_path, use_dns48, use_dns64, opset_version)
-    
-    ort_session = onnxruntime.InferenceSession(onnx_tt_model_path)
-    
-    print(f'ort session inputs : {ort_session.get_inputs()}')
-    print(f'ort session outputs : {ort_session.get_outputs()}')
