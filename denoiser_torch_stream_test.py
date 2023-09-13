@@ -18,7 +18,6 @@ def test_audio_denoising_with_variance(torch_model_path, noisy, frame_length, hi
 
     streamer = DemucsOnnxStreamerTT(model, dry=0)
 
-    frames_input = torch.tensor([1])
     frame_num = torch.tensor([1])
     variance = torch.tensor([0.0], dtype=torch.float32)
     depth = streamer.demucs.depth
@@ -138,7 +137,6 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
 
     streamer = DemucsOnnxStreamerTT(model, dry=0)
 
-    frames_input = torch.tensor([1])
     frame_num = torch.tensor([1])
     depth = streamer.demucs.depth
 
@@ -170,9 +168,10 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
             (1, hidden, 4),
             (1, 1, 4)
         ]
-    streamer.variance = torch.tensor(0.0, dtype=torch.float32)
+    variance = torch.tensor(0.0, dtype=torch.float32)
     print(
-        f"streamer stride: {streamer.stride}, total stride: {streamer.demucs.total_stride}, frame length: {streamer.frame_length}")
+        f"streamer stride: {streamer.stride}, total stride: {streamer.demucs.total_stride},"
+        f" frame length: {streamer.frame_length}")
     print(f"streamer total length : {streamer.total_length}")
     conv_state_list = [torch.zeros(size) for size in conv_state_sizes]
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
@@ -191,9 +190,9 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
 
             start_time = time.time()
             # onnx modelinin çalışmsı
-            out_frame, next_frame_num, next_resample_in, next_resample_out, next_conv_state, next_lstm_state_1, next_lstm_state_2 \
-                = streamer.forward(frame, to_numpy(frame_num), resample_input_frame, resample_out_frame,
-                                   conv_state, lstm_state_1, lstm_state_2)
+            out_frame, next_frame_num, next_variance, next_resample_in, next_resample_out, next_conv_state, next_lstm_state_1, \
+            next_lstm_state_2 = streamer.forward(frame, to_numpy(frame_num), to_numpy(variance), resample_input_frame,
+                                                 resample_out_frame, conv_state, lstm_state_1, lstm_state_2)
 
             print(f'out shape:{out_frame.shape}, input frame shape: {frame.shape}')
             end_time = time.time()
@@ -225,9 +224,10 @@ def test_audio_denoising(torch_model_path, noisy, frame_length, hidden, depth=4)
             [:, :frame_length - frames.shape[1]]], dim=1)
 
             start_time = time.time()
-            out_frame, next_frame_num, next_resample_in, next_resample_out, next_conv_state, next_lstm_state_1, next_lstm_state_2 \
-                = streamer.forward(last_frame, to_numpy(frame_num), resample_input_frame, resample_out_frame,
-                                   conv_state, lstm_state_1, lstm_state_2)
+            out_frame, next_frame_num, next_variance, next_resample_in, next_resample_out, next_conv_state, next_lstm_state_1, \
+            next_lstm_state_2 = streamer.forward(frame, to_numpy(frame_num), to_numpy(variance), resample_input_frame,
+                                                 resample_out_frame, conv_state, lstm_state_1, lstm_state_2)
+
             end_time = time.time()
             inference_time = (end_time - start_time) * 1000
             total_inference_time += inference_time
@@ -287,6 +287,7 @@ if __name__ == '__main__':
     '''
     if os.path.isfile(noisy_audio):
         noisy, sr = torchaudio.load(str(noisy_audio))
+
         name = os.path.basename(noisy_audio)
         if out_dir.endswith('.wav'):
             parent_dir = os.path.dirname(out_dir)
@@ -297,7 +298,6 @@ if __name__ == '__main__':
             if not os.path.exists(out_dir):
                 os.mkdir(out_dir)
             out_file = os.path.join(out_dir, name)
-        # noisy, sr = torchaudio.load(str(audio_file))
         print(f"inference starts for {noisy_audio}")
         if variance:
             test_audio_denoising_with_variance(model_file, noisy, frame_length, hidden, depth)
@@ -312,6 +312,7 @@ if __name__ == '__main__':
             name = os.path.basename(noisy_f)
             out_file = os.path.join(out_dir, name)
             noisy, sr = torchaudio.load(str(noisy_f))
+
             print(f"inference starts for {noisy_f}")
             if variance:
                 test_audio_denoising_with_variance(model_file, noisy, frame_length, hidden, depth)

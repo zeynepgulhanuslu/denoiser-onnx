@@ -105,7 +105,7 @@ class DemucsOnnxStreamerTT(nn.Module):
             print(f'(1 - 1 / self.frames): {(1 - 1 / self.frames)}')
             print(f'(1 - 1 / self.frames) * self.variance: {(1 - 1 / self.frames) * self.variance}')
             self.variance = variance_val / self.frames + (1 - 1 / self.frames) * self.variance
-            frame = frame / (demucs.floor + torch.sqrt(self.variance))
+            frame = frame / (demucs.floor + math.sqrt(self.variance))
 
         self.resample_in = resample_input_frame
         padded_frame = torch.cat([self.resample_in, frame], dim=-1)
@@ -189,7 +189,7 @@ class DemucsOnnxStreamerTT(nn.Module):
         conv_state_list = [conv_state[..., conv_state_sizes_cumsum[i]:conv_state_sizes_cumsum[i + 1]].view(size) for
                            i, size in enumerate(conv_state_sizes)]
 
-        first = True if self.frames == 1 else False
+        first = True if self.frames == 0 else False
         print(f"first {first}")
         self.conv_state = conv_state
         stride = self.stride * demucs.resample
@@ -211,6 +211,7 @@ class DemucsOnnxStreamerTT(nn.Module):
                     missing = tgt - prev.shape[-1]
                     offset = length - demucs.kernel_size - demucs.stride * (missing - 1)
                     x = x[..., offset:]
+                print(f'dtype of x: {x.dtype}')
                 x = encode[1](encode[0](x))
                 x = fast_conv(encode[2], x)
                 x = encode[3](x)
@@ -255,10 +256,8 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.conv_state = new_conv_state
         for cs in self.conv_state:
             print(cs.shape)
-        if first:
-            return x[0], extra[0], conv_state, new_lstm_state[0], new_lstm_state[1]
-        else:
-            return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]
+
+        return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]
 
 
 def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False,
@@ -284,7 +283,7 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
     # x = torch.randn(1, streamer.total_length)
     x = torch.randn(1, 1024)
 
-    frame_num = torch.tensor([1])
+    frame_num = torch.tensor([2])
     variance_tensor = torch.tensor([0.0], dtype=torch.float32)
     hidden = streamer.demucs.hidden
 
@@ -335,8 +334,7 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
                           output_names=output_names,
                           dynamic_axes={'input': {0: 'channel', 1: 'sequence_length'},
                                         # variable length axes
-                                        'output': {0: 'channel', 1: 'sequence_length'},
-                                        'conv_state': {0: 'conv_state.1_dim_0', 1: 'conv_state.1_dim_1'}})
+                                        'output': {0: 'channel', 1: 'sequence_length'}})
 
 
 if __name__ == '__main__':
