@@ -333,7 +333,8 @@ def test_audio_denoising(noisy, onnx_tt_model_path, hidden, out_file, depth=4):
             lstm_state_2 = out[6]
             # temizlenmiş frame tensor olarak çıkış dizisine eklenir.
             outs.append(torch.from_numpy(output_np))
-            frames = frames[:, stride:]  # bir sonraki frame e gidilir.
+
+            # bir sonraki frame e gidilir.
             frame_num.add_(1)  # frame sayısı arttırlır.
 
         # en sonda frame length den küçük kısım kaldıysa, orası da işlenir.
