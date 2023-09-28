@@ -10,7 +10,11 @@ from deepfilternet_onnx_stream import generate_onnx_features
 
 
 def quantize_onnx_model(onnx_model_file, quantized_model_file):
-    quantize_dynamic(Path(onnx_model_file), Path(quantized_model_file), weight_type=QuantType.QUInt8)
+    onnx_opt_model = onnx.load(onnx_model_file)
+    quantize_dynamic(onnx_model_file,
+                     quantized_model_file,
+                     weight_type=QuantType.QInt8)
+
     q_model = onnx.load(quantized_model_file)
 
     onnx.checker.check_model(q_model)
@@ -56,7 +60,7 @@ def check_quantized_model(onnx_model_file, quantized_model_file):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--onnx_model', type=str, required=True, help='Onnx model file')
+    parser.add_argument('-o', '--onnx_model', type=str, required=True, help='Onnx model file')
     parser.add_argument('-q', '--quantized_model', type=str, required=True, help='Quantized model file')
 
     args = parser.parse_args()

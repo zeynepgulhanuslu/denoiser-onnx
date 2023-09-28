@@ -10,6 +10,9 @@ import onnxruntime
 import torch
 import torchaudio
 
+seed = 2036
+torch.manual_seed(seed)
+
 
 # torch-> numpy dönüşümü
 def to_numpy(tensor):
@@ -133,7 +136,6 @@ def test_audio_denoising_with_variance(noisy, onnx_tt_model_path, hidden, out_fi
             frame = frames[:, :frame_length]  # burada ses dosyasının bir kısmı alınır. streaming simulasyonu.
             print(f"frame shape:{frame.shape}")
             # onnx modelinin giriş değerleri.
-            print(f'variance input value: {variance_input[0]:.2f}')
             input_values = {
                 input_audio_frame_name: to_numpy(frame),
                 frame_num_name: to_numpy(frame_num),
@@ -165,14 +167,13 @@ def test_audio_denoising_with_variance(noisy, onnx_tt_model_path, hidden, out_fi
             resample_input_frame = out[3]
             resample_out_frame = out[4]
             conv_state = torch.from_numpy(out[5])
+
             lstm_state_1 = out[6]
             lstm_state_2 = out[7]
             # temizlenmiş frame tensor olarak çıkış dizisine eklenir.
             outs.append(torch.from_numpy(output_np))
             frames = frames[:, stride:]  # bir sonraki frame e gidilir.
             frame_num.add_(1)  # frame sayısı arttırlır.
-
-            print(f'variance out length:{len(out[2])}, variance out value: {out[2][0]:.2f}')
 
         # en sonda frame length den küçük kısım kaldıysa, orası da işlenir.
         if frames.shape[1] > 0:

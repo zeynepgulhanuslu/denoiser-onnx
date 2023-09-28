@@ -67,8 +67,11 @@ def denoise_audio_streaming(audio_file, frame_size, enhanced_file):
         states_onnx = torch.from_numpy(out_states)
         output_frames.append(torch.from_numpy(out_enhanced_frame))
         total_frame += 1
-    mean_rtf = total_inference_time / total_frame
-    print(f'Mean rtf : {mean_rtf:.2f}')
+    average_inference_time = total_inference_time / total_frame
+
+    print(f"average inference time in ms: {average_inference_time:.6f}")
+    print(f"average rtf : {average_inference_time / frame_in_ms:.6f}")
+
 
     enhanced_audio = torch.cat(output_frames).unsqueeze(0)
     estimate = enhanced_audio.detach().cpu()
