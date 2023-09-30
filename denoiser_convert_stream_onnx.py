@@ -95,6 +95,8 @@ class DemucsOnnxStreamerTT(nn.Module):
         resample = demucs.resample
         self.lstm_state = (lstm_state_1, lstm_state_2)
         self.conv_state = conv_state
+        print(f'streamer total length : {self.total_length}, {self.total_length + self.stride}')
+        print(f'streamer frame length : {self.frame_length}')
         dry_signal = frame[:, :stride]
         self.variance = variance
         if demucs.normalize:
@@ -106,7 +108,7 @@ class DemucsOnnxStreamerTT(nn.Module):
             print(f'(1 - 1 / self.frames) * self.variance: {(1 - 1 / self.frames) * self.variance}')
             self.variance = variance_val / self.frames + (1 - 1 / self.frames) * self.variance
             frame = frame / (demucs.floor + math.sqrt(self.variance))
-
+        print(f"frame shape before padding : {frame.shape}")
         self.resample_in = resample_input_frame
         padded_frame = torch.cat([self.resample_in, frame], dim=-1)
         self.resample_in[:] = frame[:, stride - resample_buffer:stride]
@@ -132,6 +134,7 @@ class DemucsOnnxStreamerTT(nn.Module):
         print(f"lstm state 2 shape: {lstm_state_2.shape}")
         print(f"resample shape : {self.resample_out.shape}")
         padded_out = torch.cat([self.resample_out, out, extra], 1)
+        print(f'padded out shape: {padded_out.shape}')
         self.resample_out[:] = out[:, -resample_buffer:]  # this will updated also.
         if resample == 4:
             out = downsample2(downsample2(padded_out))
@@ -139,9 +142,10 @@ class DemucsOnnxStreamerTT(nn.Module):
             out = downsample2(padded_out)
         else:
             out = padded_out
-
+        print(f'out with resample: {out.shape}')
         out = out[:, resample_buffer // resample:]
         out = out[:, :stride]
+        print(f'out after stride: {out.shape}')
 
         if demucs.normalize:
             out *= math.sqrt(self.variance)
@@ -150,6 +154,8 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.conv_state = new_conv_state
         return out, frame_num, self.variance, self.resample_in, self.resample_out, \
                new_conv_state, new_lstm_state_1, new_lstm_state_2
+
+
 
     def _separate_frame(self, frame, conv_state=None, lstm_state_1=None, lstm_state_2=None):
         demucs = self.demucs
