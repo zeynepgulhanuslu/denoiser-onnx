@@ -1,25 +1,15 @@
 import numpy as np
 import torch
 import torchaudio
+from denoiser.demucs import DemucsStreamer
 
 from denoiser_convert_stream_onnx import DemucsOnnxStreamerTT
 from denoiser_inference import init_denoiser_model_from_file, to_numpy
 from denoiser_onnx_test import write
 
-if __name__ == "__main__":
-    torch_model_path = 'D:/zeynep/data/noise-cancelling/denoiser/dns/exp_hidden=48_depth=4_stride=128_resample=2_kernel=4/best.th'
 
-    model = init_denoiser_model_from_file(torch_model_path)
-    # model = dns48()
-    model.eval()
-    hidden = 48
-    noisy_path = '../sample-small.wav'
-    out_file = '../sample-small-stream.wav'
-    noisy, sr = torchaudio.load(str(noisy_path))
+def test_denoiser_streamtt():
     streamer = DemucsOnnxStreamerTT(demucs=model, dry=0)
-    streamer.demucs.valid_length(1)
-    print(f'streamer stride:{streamer.stride}, {streamer.demucs.total_stride}')
-    print(f'valid length: {streamer.demucs.valid_length(0)}, {streamer.demucs.valid_length(1)}')
     frames_input = torch.tensor([1])
     frame_num = torch.tensor([1])
     variance = torch.tensor([0.0], dtype=torch.float32)
@@ -94,3 +84,35 @@ if __name__ == "__main__":
         enhanced = estimate / max(estimate.abs().max().item(), 1)
         np_enhanced = np.squeeze(enhanced.detach().squeeze(0).cpu().numpy())
         write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
+
+
+def test_default_streaming_model():
+    streamer = DemucsStreamer(demucs=model, dry=0)
+    out_rt = []
+    frame_size = 128
+    with torch.no_grad():
+        while noisy.shape[1] > 0:
+            out_stream = streamer.feed(noisy[:, :frame_size])
+            out_rt.append(out_stream)
+            noisy = noisy[:, frame_size:]
+            #frame_size = streamer.demucs.total_stride
+    out_rt.append(streamer.flush())
+    out_rt = torch.cat(out_rt, 1)
+
+    enhanced = out_rt / max(out_rt.abs().max().item(), 1)
+    np_enhanced = np.squeeze(enhanced.detach().squeeze(0).cpu().numpy())
+    write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
+
+
+if __name__ == "__main__":
+    torch_model_path = (
+        '/Users/zeynep/Desktop/zeyn/data/models/denoiser/dns/hidden=48_depth=4_stride=128_resample=2/best.th')
+
+    model = init_denoiser_model_from_file(torch_model_path)
+    # model = dns48()
+    model.eval()
+    hidden = 48
+    noisy_path = '../sample-small.wav'
+    out_file = '../sample-small-stream-default.wav'
+    frame_length = 256
+    noisy, sr = torchaudio.load(str(noisy_path))

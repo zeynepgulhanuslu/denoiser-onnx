@@ -153,9 +153,7 @@ class DemucsOnnxStreamerTT(nn.Module):
         out = self.dry * dry_signal + (1 - self.dry) * out
         self.conv_state = new_conv_state
         return out, frame_num, self.variance, self.resample_in, self.resample_out, \
-               new_conv_state, new_lstm_state_1, new_lstm_state_2
-
-
+            new_conv_state, new_lstm_state_1, new_lstm_state_2
 
     def _separate_frame(self, frame, conv_state=None, lstm_state_1=None, lstm_state_2=None):
         demucs = self.demucs
