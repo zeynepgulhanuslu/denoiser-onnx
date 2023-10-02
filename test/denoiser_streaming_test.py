@@ -1,3 +1,5 @@
+import argparse
+
 import numpy as np
 import torch
 import torchaudio
@@ -8,7 +10,7 @@ from denoiser_inference import init_denoiser_model_from_file, to_numpy
 from denoiser_onnx_test import write
 
 
-def test_denoiser_streamtt():
+def test_denoiser_streamtt(out_file, frame_length, hidden=48):
     streamer = DemucsOnnxStreamerTT(demucs=model, dry=0)
     frames_input = torch.tensor([1])
     frame_num = torch.tensor([1])
@@ -19,7 +21,7 @@ def test_denoiser_streamtt():
     print(f"lstm state : {lstm_state_1.shape}, {lstm_state_2.shape}")
     resample_input_frame = torch.zeros(1, streamer.resample_buffer)
     resample_out_frame = torch.zeros(1, streamer.resample_buffer)
-    frame_length = 128
+
     if depth == 4:
         conv_state_sizes = [
             (1, hidden, 148),
@@ -86,7 +88,7 @@ def test_denoiser_streamtt():
         write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
 
 
-def test_default_streaming_model():
+def test_default_streaming_model(out_file):
     streamer = DemucsStreamer(demucs=model, dry=0)
     out_rt = []
     frame_size = 128
@@ -95,7 +97,7 @@ def test_default_streaming_model():
             out_stream = streamer.feed(noisy[:, :frame_size])
             out_rt.append(out_stream)
             noisy = noisy[:, frame_size:]
-            #frame_size = streamer.demucs.total_stride
+            # frame_size = streamer.demucs.total_stride
     out_rt.append(streamer.flush())
     out_rt = torch.cat(out_rt, 1)
 
@@ -105,14 +107,31 @@ def test_default_streaming_model():
 
 
 if __name__ == "__main__":
-    torch_model_path = (
-        '/Users/zeynep/Desktop/zeyn/data/models/denoiser/dns/hidden=48_depth=4_stride=128_resample=2/best.th')
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '-m', '--model_path', type=str, default="dns48.th",
+        help='Model directory')
 
+    parser.add_argument(
+        '-n', '--noisy_file', type=str, default="sample-small.wav", help='Noisy audio file')
+
+    parser.add_argument(
+        '-e', '--enhanced_file', type=str, default="sample-small-dns48-enhanced.wav", help='Out file')
+
+    parser.add_argument(
+        '-f', '--frame_length', type=int, default=480, help='frame length in ms')
+
+    parser.add_argument(
+        '-h', '--hidden_size', type=int, default=48, help='Model hidden size')
+
+    args = parser.parse_args()
+    torch_model_path = args.model_path
+    noisy_path = args.noisy_file
+    enhanced_file = args.enhanced_file
+    frame_length = args.frame_length
+    hidden_size = args.hidden_size
     model = init_denoiser_model_from_file(torch_model_path)
-    # model = dns48()
     model.eval()
-    hidden = 48
-    noisy_path = '../sample-small.wav'
-    out_file = '../sample-small-stream-default.wav'
-    frame_length = 256
+
     noisy, sr = torchaudio.load(str(noisy_path))
+

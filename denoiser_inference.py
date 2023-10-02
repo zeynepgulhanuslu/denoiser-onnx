@@ -17,6 +17,7 @@ def to_numpy(tensor):
     else:
         return tensor
 
+
 # this function initialize model from file.
 def init_denoiser_model_from_file(model_file):
     print("Loading model from ", model_file)
