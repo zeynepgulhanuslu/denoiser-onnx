@@ -4,13 +4,12 @@ import time
 
 import librosa
 import numpy as np
-import onnxruntime
 import torch
 import torchaudio
 
-from denoiser_convert_stream_onnx import DemucsOnnxStreamerTT
+from demucs_streamer import DemucsOnnxStreamerTT
 from denoiser_inference import init_denoiser_model_from_file, to_numpy
-from denoiser_onnx_test import write, load_onnx_from_zip, is_zip_file
+from denoiser_onnx_test import write
 
 
 def test_audio_denoising_with_variance(torch_model_path, noisy, frame_length, hidden, depth=4):

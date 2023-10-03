@@ -5,17 +5,38 @@ import torch
 import torchaudio
 from denoiser.demucs import DemucsStreamer
 
-from denoiser_convert_stream_onnx import DemucsOnnxStreamerTT
+from demucs_streamer import DemucsOnnxStreamerTT
 from denoiser_inference import init_denoiser_model_from_file, to_numpy
 from denoiser_onnx_test import write
 
 
+def extend_input_frame_shape(input_frame, length):
+    """Extends the input frame shape from torch.Size([1, 128]) to torch.Size([1, 480]).
+
+    Args:
+      input_frame: A PyTorch tensor of shape torch.Size([1, 128]).
+
+    Returns:
+      A PyTorch tensor of shape torch.Size([1, 480]).
+    """
+    extend_length = length - input_frame.shape[1]
+    # Create a zero tensor of shape 1, length (the difference between extended length and current length).
+    zeros = torch.zeros(1, extend_length)
+
+    # Concatenate the two tensors along the first dimension.
+    extended_input_frame = torch.cat((input_frame, zeros), dim=1)
+
+    return extended_input_frame
+
+
 def test_denoiser_streamtt(out_file, frame_length, hidden=48):
     streamer = DemucsOnnxStreamerTT(demucs=model, dry=0)
+
     frames_input = torch.tensor([1])
     frame_num = torch.tensor([1])
     variance = torch.tensor([0.0], dtype=torch.float32)
     depth = streamer.demucs.depth
+    print(f'valid length:{streamer.demucs.valid_length(1)}')
     lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
     print(f"lstm state : {lstm_state_1.shape}, {lstm_state_2.shape}")
@@ -70,13 +91,11 @@ def test_denoiser_streamtt(out_file, frame_length, hidden=48):
             print(f'out shape:{out[0].shape}')
             print("--------------------------/n")
             pending = pending[:, streamer.stride:]
-
             frames_input.add_(1)
+
         if pending.shape[1] > 0:
             # Expand the remaining audio with zeros
-            last_frame = torch.cat([pending, torch.zeros_like(pending)
-            [:, :frame_length - pending.shape[1]]], dim=1)
-
+            last_frame = extend_input_frame_shape(pending, frame_length)
             out = streamer.forward(last_frame, to_numpy(frames_input), to_numpy(variance),
                                    resample_input_frame, resample_out_frame,
                                    conv_state, lstm_state_1, lstm_state_2)
@@ -88,10 +107,10 @@ def test_denoiser_streamtt(out_file, frame_length, hidden=48):
         write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
 
 
-def test_default_streaming_model(out_file):
+def test_default_streaming_model(noisy, out_file, frame_size):
     streamer = DemucsStreamer(demucs=model, dry=0)
     out_rt = []
-    frame_size = 128
+
     with torch.no_grad():
         while noisy.shape[1] > 0:
             out_stream = streamer.feed(noisy[:, :frame_size])
@@ -122,7 +141,7 @@ if __name__ == "__main__":
         '-f', '--frame_length', type=int, default=480, help='frame length in ms')
 
     parser.add_argument(
-        '-h', '--hidden_size', type=int, default=48, help='Model hidden size')
+        '-hs', '--hidden_size', type=int, default=48, help='Model hidden size')
 
     args = parser.parse_args()
     torch_model_path = args.model_path
@@ -135,3 +154,4 @@ if __name__ == "__main__":
 
     noisy, sr = torchaudio.load(str(noisy_path))
 
+    test_denoiser_streamtt(enhanced_file, frame_length)

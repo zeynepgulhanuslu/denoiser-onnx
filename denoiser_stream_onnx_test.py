@@ -10,8 +10,6 @@ import onnxruntime
 import torch
 import torchaudio
 
-from denoiser_onnx_test import split_audio_into_frames
-
 seed = 2036
 torch.manual_seed(seed)
 
