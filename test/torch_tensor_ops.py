@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 
@@ -21,10 +22,37 @@ def extend_input_frame_shape(input_frame, length):
 
 
 if __name__ == '__main__':
-    tensor = torch.randn(1, 128)
-    len = 480 - 128
+    stride = 30
+    total_length = 100
+    in_frame = torch.randn(1, stride)
 
-    extended_input_frame = extend_input_frame_shape(tensor, len)
-    print(f'extended_input_shape :{extended_input_frame.shape}')
-    print(f'frame input :{tensor}')
-    print(f'extended_input_shape :{extended_input_frame}')
+    print(in_frame)
+    print('********************')
+
+    frame_buffer = torch.zeros(1, total_length)
+
+    frame_buffer = torch.cat((frame_buffer[:, stride:], in_frame), 1)
+    print('frame buffer:')
+    print(frame_buffer)
+    print(frame_buffer.shape)
+    print('********************')
+    '''
+    shifted_in_frame = torch.cat((in_frame[:, stride:], torch.zeros(1, stride)), 1)
+
+    out_buffer = torch.cat((frame_buffer[:, stride:], shifted_in_frame), 1)
+    print('out buffer:')
+    print(out_buffer)
+    print(out_buffer.shape)
+    print('********************')
+    '''
+    next_in_frame = torch.randn(1, stride)
+
+    print('next in frame')
+    print(next_in_frame)
+
+    print('********************')
+
+    next_buffer = torch.cat((frame_buffer[:, stride:], next_in_frame), 1)
+    print('next buffer:')
+    print(next_buffer)
+    print(next_buffer.shape)

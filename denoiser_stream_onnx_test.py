@@ -50,35 +50,49 @@ def is_zip_file(file_path):
     return file_extension.lower() == ".zip"
 
 
-def test_audio_denoising_with_variance(noisy, onnx_tt_model_path, hidden, out_file, depth=4):
-    # Bu kısmın iyileştirme yapıp yapmadığına emin değilim.
-    session_options = onnxruntime.SessionOptions()
-    session_options.intra_op_num_threads = 1
-    session_options.inter_op_num_threads = 1
-    session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session_options.enable_profiling = False
-    session_options.profile_file_prefix = "profile_streamtt_1thread"
-    # onnx runtime session oluşturulması
-    if is_zip_file(onnx_tt_model_path):
-        model_bytes = load_onnx_from_zip(onnx_tt_model_path)
-        ort_session = onnxruntime.InferenceSession(model_bytes, session_options)
-    else:
-        ort_session = onnxruntime.InferenceSession(onnx_tt_model_path, session_options)
+def denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, out_file):
+    ort_session = onnxruntime.InferenceSession(onnx_model_file)
+    # onnx model input names:
+    input_name = ort_session.get_inputs()[0].name
+    frame_buffer_name = ort_session.get_inputs()[1].name
+    frames_input_name = ort_session.get_inputs()[2].name
+    variance_input_name = ort_session.get_inputs()[3].name
+    resample_input_name = ort_session.get_inputs()[4].name
+    resample_output_name = ort_session.get_inputs()[5].name
+    h0_input_name = ort_session.get_inputs()[6].name
+    c0_input_name = ort_session.get_inputs()[7].name
+    conv_state_name = ort_session.get_inputs()[8].name
 
-    # burada onnx modelinin giriş değerlerinin isimleri alınır.
-    input_audio_frame_name = ort_session.get_inputs()[0].name  # ses dizisini ifade eder
-    frame_num_name = ort_session.get_inputs()[1].name  # frame numarasıdır, her bir frame de artacak
-    variance_input_name = ort_session.get_inputs()[2].name
-    # modelin içerisinde güncellenen parametreler aşağıdaki gibidir.
-    resample_input_frame_name = ort_session.get_inputs()[3].name
-    resample_out_frame_name = ort_session.get_inputs()[4].name
-    conv_state_name = ort_session.get_inputs()[5].name
-    lstm_state_1_name = ort_session.get_inputs()[6].name
-    lstm_state_2_name = ort_session.get_inputs()[7].name
+    # onnx model output names:
+    output_name = ort_session.get_outputs()[0].name
+    out_buffer_name = ort_session.get_outputs()[1].name
+    frames_output_name = ort_session.get_outputs()[2].name
+    variance_output_name = ort_session.get_outputs()[3].name
+    out_resample_input_name = ort_session.get_outputs()[4].name
+    out_resample_out_name = ort_session.get_outputs()[5].name
+    h0_output_name = ort_session.get_outputs()[6].name
+    c0_output_name = ort_session.get_outputs()[7].name
+    out_conv_state_name = ort_session.get_outputs()[8].name
+    # output names list
+    output_names = [output_name,
+                    out_buffer_name,
+                    frames_output_name,
+                    variance_output_name,
+                    out_resample_input_name,
+                    out_resample_out_name,
+                    h0_output_name,
+                    c0_output_name,
+                    out_conv_state_name]
+    # this will simulate overlap.
+    frame_buffer = np.zeros((1, total_length), dtype=np.float32)
+    frames_input = torch.tensor([1])
+    h0 = np.zeros((2, 1, hidden * 2 ** (depth - 1)), dtype=np.float32)  # lstm first state
+    c0 = np.zeros((2, 1, hidden * 2 ** (depth - 1)), dtype=np.float32)  # lstm second state
+    variance = torch.tensor([0.0], dtype=torch.float32)  # variance value
+    resample_input_frame = np.zeros((1, resample_buffer), dtype=np.float32)
+    resample_out_frame = np.zeros((1, resample_buffer), dtype=np.float32)
 
-    # conv state leri 9 tane tensor den oluşan bir array dir. Burada size ları belirtilmiştir.
     if depth == 4:
-
         conv_state_sizes = [
             (1, hidden, 148),
             (1, hidden * 2, 36),
@@ -101,56 +115,33 @@ def test_audio_denoising_with_variance(noisy, onnx_tt_model_path, hidden, out_fi
             (1, 1, 4)
         ]
 
-    conv_state_list = [torch.zeros(size) for size in conv_state_sizes]  # içeriği sıfır olan torch array oluşturulur.
+    conv_state_list = [torch.zeros(size) for size in conv_state_sizes]
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
+    total_frame = 0
+    total_inference_time = 0
+    frame_in_ms = (total_length / 16000) * 1000  # her bir frame in ms cinsinden uzunluğu
+    total_duration = (len(noisy) / 16000) * 1000
 
-    lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    frame_num = torch.tensor([1])  # frame numarası
-    variance_input = torch.tensor([0.0], dtype=torch.float32)
-    resample_input_frame = torch.zeros(1, resample_buffer)
-    resample_out_frame = torch.zeros(1, resample_buffer)
-
-    # onnx modelinin çıktısındaki değerlerin isimleri
-    out_frame_name = ort_session.get_outputs()[0].name  # burası çıkış audio array idir.
-    out_num_frame_name = ort_session.get_outputs()[1].name
-
-    # aşağıdakiler her adımda güncellenen değerlerdir. Bu çıkışlar bir sonraki adımda giriş olarak verilecektir.
-    out_variance_name = ort_session.get_outputs()[2].name
-    out_resample_in_frame = ort_session.get_outputs()[3].name
-    out_resample_frame = ort_session.get_outputs()[4].name
-    out_conv = ort_session.get_outputs()[5].name
-    out_lstm_1 = ort_session.get_outputs()[6].name
-    out_lstm_2 = ort_session.get_outputs()[7].name
-
-    frame_in_ms = (frame_length / 16000) * 1000  # her bir frame in ms cinsinden uzunluğu
-    total_duration = (len(noisy) / 16000) * 1000  # ses dosyasının ms cinsinden uzunluğu
     with torch.no_grad():
-        outs = []  # çıkışta oluşan audio tensor lerini tutacak
-        total_frame = 0
-        frames = noisy
-        total_inference_time = 0
-
-        # frame length sabit olacak
-        while frames.shape[1] >= frame_length:
-            frame = frames[:, :frame_length]  # burada ses dosyasının bir kısmı alınır. streaming simulasyonu.
-            print(f"frame shape:{frame.shape}")
-            # onnx modelinin giriş değerleri.
-            input_values = {
-                input_audio_frame_name: to_numpy(frame),
-                frame_num_name: to_numpy(frame_num),
-                variance_input_name: to_numpy(variance_input),
-                resample_input_frame_name: to_numpy(resample_input_frame),
-                resample_out_frame_name: to_numpy(resample_out_frame),
-                conv_state_name: to_numpy(conv_state),
-                lstm_state_1_name: to_numpy(lstm_state_1),
-                lstm_state_2_name: to_numpy(lstm_state_2)
-            }
-
+        pending = noisy
+        outs = []
+        while pending.shape[1] >= stride:
+            frame = pending[:, :stride].numpy()  # send frame stride length
+            # onnx model input dict.
+            input_dict = {input_name: frame,
+                          frame_buffer_name: frame_buffer,
+                          frames_input_name: to_numpy(frames_input),
+                          variance_input_name: to_numpy(variance),
+                          resample_input_name: resample_input_frame,
+                          resample_output_name: resample_out_frame,
+                          h0_input_name: h0,
+                          c0_input_name: c0,
+                          conv_state_name: to_numpy(conv_state)}
             start_time = time.time()
-            # onnx modelinin çalışmsı
-            out = ort_session.run([out_frame_name, out_num_frame_name, out_variance_name, out_resample_in_frame,
-                                   out_resample_frame, out_conv, out_lstm_1, out_lstm_2], input_values)
+            out, out_frame_buffer, out_frame_num, out_variance, out_resample_input_frame, out_resample_out_frame, \
+            out_h, out_c, out_conv_state = ort_session.run(
+                output_names,
+                input_dict)
             end_time = time.time()
             inference_time = (end_time - start_time) * 1000
             if inference_time > 0.1:
@@ -160,41 +151,28 @@ def test_audio_denoising_with_variance(noisy, onnx_tt_model_path, hidden, out_fi
             rtf = inference_time / frame_in_ms
             print(f"inference time in ms for frame {total_frame + 1}, noisy frame in ms: {frame_in_ms}, "
                   f"{inference_time} ms. rtf: {rtf}")
+            outs.append(torch.from_numpy(out))  # add out enhanced frame to list
+            # update inputs with results
+            frame_buffer = out_frame_buffer
+            variance = out_variance
+            resample_input_frame = out_resample_input_frame
+            resample_out_frame = out_resample_out_frame
+            h0 = out_h
+            c0 = out_c
+            conv_state = out_conv_state
+            pending = pending[:, stride:]
+            frames_input.add_(1)
 
-            output_np = out[0]  # enhanced out audio
-            # bundan sonraki çıktılar, bir sonraki frame için input olacak. dolayısıyla atama yapılıyor.
-            variance_input = out[2]
-            resample_input_frame = out[3]
-            resample_out_frame = out[4]
-            conv_state = torch.from_numpy(out[5])
-
-            lstm_state_1 = out[6]
-            lstm_state_2 = out[7]
-            # temizlenmiş frame tensor olarak çıkış dizisine eklenir.
-            outs.append(torch.from_numpy(output_np))
-            frames = frames[:, stride:]  # bir sonraki frame e gidilir.
-            frame_num.add_(1)  # frame sayısı arttırlır.
-
-        # en sonda frame length den küçük kısım kaldıysa, orası da işlenir.
-        if frames.shape[1] > 0:
+        if pending.shape[1] > 0:
             # Expand the remaining audio with zeros
-            last_frame = torch.cat([frames, torch.zeros_like(frames)
-            [:, :frame_length - frames.shape[1]]], dim=1)
-
-            input_values = {
-                input_audio_frame_name: to_numpy(last_frame),
-                frame_num_name: to_numpy(frame_num),
-                variance_input_name: to_numpy(variance_input),
-                resample_input_frame_name: to_numpy(resample_input_frame),
-                resample_out_frame_name: to_numpy(resample_out_frame),
-                conv_state_name: to_numpy(conv_state),
-                lstm_state_1_name: to_numpy(lstm_state_1),
-                lstm_state_2_name: to_numpy(lstm_state_2)
-            }
-
+            zeros_needed = stride - pending.shape[1]
+            zeros_to_add = torch.zeros(1, zeros_needed)
+            last_frame = torch.cat([pending, zeros_to_add], dim=1)
+            input_dict[input_name] = last_frame.numpy()
             start_time = time.time()
-            out = ort_session.run([out_frame_name, out_num_frame_name, out_variance_name, out_resample_in_frame,
-                                   out_resample_frame, out_conv, out_lstm_1, out_lstm_2], input_values)
+            out = ort_session.run(
+                output_names,
+                input_dict)
             end_time = time.time()
             inference_time = (end_time - start_time) * 1000
             total_inference_time += inference_time
@@ -202,182 +180,14 @@ def test_audio_denoising_with_variance(noisy, onnx_tt_model_path, hidden, out_fi
             print(f"inference time in ms for frame {total_frame + 1}, frame in ms: {frame_in_ms}, "
                   f"{inference_time} ms. rtf: {rtf}")
             outs.append(torch.from_numpy(out[0]))
-
             if inference_time > 0.1:
                 total_frame += 1
-
-        estimate = torch.cat(outs, 1)  # burada çıkıştaki tensor ler bir torch tensor üne dönüştürülür.
-    # Run the model
-    prof = ort_session.end_profiling()
+    estimate = torch.cat(outs, 1)
 
     average_inference_time = total_inference_time / total_frame
     print(f"average inference time in ms: {average_inference_time:.6f}")
     print(f"average rtf : {average_inference_time / frame_in_ms:.6f}")
-    enhanced = estimate / max(estimate.abs().max().item(), 1)
-    np_enhanced = np.squeeze(enhanced.detach().squeeze(0).cpu().numpy())
-    write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
-
-
-def test_audio_denoising(noisy, onnx_tt_model_path, hidden, out_file, depth=4):
-    # Bu kısmın iyileştirme yapıp yapmadığına emin değilim.
-    session_options = onnxruntime.SessionOptions()
-    session_options.intra_op_num_threads = 1
-    session_options.inter_op_num_threads = 1
-    session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session_options.enable_profiling = False
-    session_options.profile_file_prefix = "profile_streamtt_1thread"
-    # onnx runtime session oluşturulması
-    if is_zip_file(onnx_tt_model_path):
-        model_bytes = load_onnx_from_zip(onnx_tt_model_path)
-        ort_session = onnxruntime.InferenceSession(model_bytes, session_options)
-    else:
-        ort_session = onnxruntime.InferenceSession(onnx_tt_model_path, session_options)
-
-    # burada onnx modelinin giriş değerlerinin isimleri alınır.
-    input_audio_frame_name = ort_session.get_inputs()[0].name  # ses dizisini ifade eder
-    frame_num_name = ort_session.get_inputs()[1].name  # frame numarasıdır, her bir frame de artacak
-
-    # modelin içerisinde güncellenen parametreler aşağıdaki gibidir.
-    resample_input_frame_name = ort_session.get_inputs()[2].name
-    resample_out_frame_name = ort_session.get_inputs()[3].name
-    conv_state_name = ort_session.get_inputs()[4].name
-    lstm_state_1_name = ort_session.get_inputs()[5].name
-    lstm_state_2_name = ort_session.get_inputs()[6].name
-
-    # conv state leri 9 tane tensor den oluşan bir array dir. Burada size ları belirtilmiştir.
-    if depth == 4:
-
-        conv_state_sizes = [
-            (1, hidden, 148),
-            (1, hidden * 2, 36),
-            (1, hidden * 4, 8),
-            (1, hidden * 4, 4),
-            (1, hidden * 2, 4),
-            (1, hidden, 4),
-            (1, 1, 4)
-        ]
-    else:
-        conv_state_sizes = [
-            (1, hidden, 596),
-            (1, hidden * 2, 148),
-            (1, hidden * 4, 36),
-            (1, hidden * 8, 8),
-            (1, hidden * 8, 4),
-            (1, hidden * 4, 4),
-            (1, hidden * 2, 4),
-            (1, hidden, 4),
-            (1, 1, 4)
-        ]
-
-    conv_state_list = [torch.zeros(size) for size in conv_state_sizes]  # içeriği sıfır olan torch array oluşturulur.
-    conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
-
-    lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    frame_num = torch.tensor([1])  # frame numarası
-    resample_input_frame = torch.zeros(1, resample_buffer)
-    resample_out_frame = torch.zeros(1, resample_buffer)
-
-    # onnx modelinin çıktısındaki değerlerin isimleri
-    out_frame_name = ort_session.get_outputs()[0].name  # burası çıkış audio array idir.
-    out_num_frame_name = ort_session.get_outputs()[1].name
-    # aşağıdakiler her adımda güncellenen değerlerdir. Bu çıkışlar bir sonraki adımda giriş olarak verilecektir.
-    out_resample_in_frame = ort_session.get_outputs()[2].name
-    out_resample_frame = ort_session.get_outputs()[3].name
-    out_conv = ort_session.get_outputs()[4].name
-    out_lstm_1 = ort_session.get_outputs()[5].name
-    out_lstm_2 = ort_session.get_outputs()[6].name
-
-    frame_in_ms = (frame_length / 16000) * 1000  # her bir frame in ms cinsinden uzunluğu
-    total_duration = (len(noisy) / 16000) * 1000  # ses dosyasının ms cinsinden uzunluğu
-    with torch.no_grad():
-        outs = []  # çıkışta oluşan audio tensor lerini tutacak
-        total_frame = 0
-        frames = noisy
-        total_inference_time = 0
-
-        # frame length sabit olacak
-        while frames.shape[1] >= frame_length:
-            frame = frames[:, :frame_length]  # burada ses dosyasının bir kısmı alınır. streaming simulasyonu.
-            print(f"frame shape:{frame.shape}")
-            # onnx modelinin giriş değerleri.
-            input_values = {
-                input_audio_frame_name: to_numpy(frame),
-                frame_num_name: to_numpy(frame_num),
-                resample_input_frame_name: to_numpy(resample_input_frame),
-                resample_out_frame_name: to_numpy(resample_out_frame),
-                conv_state_name: to_numpy(conv_state),
-                lstm_state_1_name: to_numpy(lstm_state_1),
-                lstm_state_2_name: to_numpy(lstm_state_2)
-            }
-
-            start_time = time.time()
-            # onnx modelinin çalışmsı
-            out = ort_session.run([out_frame_name, out_num_frame_name, out_resample_in_frame, out_resample_frame,
-                                   out_conv, out_lstm_1, out_lstm_2], input_values)
-            end_time = time.time()
-            inference_time = (end_time - start_time) * 1000
-            if inference_time > 0.1:
-                total_frame += 1
-
-            total_inference_time += inference_time
-            rtf = inference_time / frame_in_ms
-            print(f"inference time in ms for frame {total_frame + 1}, noisy frame in ms: {frame_in_ms}, "
-                  f"{inference_time} ms. rtf: {rtf}")
-
-            output_np = out[0]  # enhanced out audio
-            # bundan sonraki çıktılar, bir sonraki frame için input olacak. dolayısıyla atama yapılıyor.
-            resample_input_frame = out[2]
-            resample_out_frame = out[3]
-            conv_state = torch.from_numpy(out[4])
-            lstm_state_1 = out[5]
-            lstm_state_2 = out[6]
-            # temizlenmiş frame tensor olarak çıkış dizisine eklenir.
-            outs.append(torch.from_numpy(output_np))
-
-            # bir sonraki frame e gidilir.
-            frame_num.add_(1)  # frame sayısı arttırlır.
-
-        # en sonda frame length den küçük kısım kaldıysa, orası da işlenir.
-        if frames.shape[1] > 0:
-            # Expand the remaining audio with zeros
-            last_frame = torch.cat([frames, torch.zeros_like(frames)
-            [:, :frame_length - frames.shape[1]]], dim=1)
-
-            input_values = {
-                input_audio_frame_name: to_numpy(last_frame),
-                frame_num_name: to_numpy(frame_num),
-                resample_input_frame_name: to_numpy(resample_input_frame),
-                resample_out_frame_name: to_numpy(resample_out_frame),
-                conv_state_name: to_numpy(conv_state),
-                lstm_state_1_name: to_numpy(lstm_state_1),
-                lstm_state_2_name: to_numpy(lstm_state_2)
-            }
-
-            start_time = time.time()
-            out = ort_session.run([out_frame_name, out_num_frame_name, out_resample_in_frame, out_resample_frame,
-                                   out_conv, out_lstm_1, out_lstm_2], input_values)
-            end_time = time.time()
-            inference_time = (end_time - start_time) * 1000
-            total_inference_time += inference_time
-            rtf = inference_time / frame_in_ms
-            print(f"inference time in ms for frame {total_frame + 1}, frame in ms: {frame_in_ms}, "
-                  f"{inference_time} ms. rtf: {rtf}")
-            outs.append(torch.from_numpy(out[0]))
-
-            if inference_time > 0.1:
-                total_frame += 1
-
-        estimate = torch.cat(outs, 1)  # burada çıkıştaki tensor ler bir torch tensor üne dönüştürülür.
-    # Run the model
-    prof = ort_session.end_profiling()
-
-    average_inference_time = total_inference_time / total_frame
-    print(f"average inference time in ms: {average_inference_time:.6f}")
-    print(f"average rtf : {average_inference_time / frame_in_ms:.6f}")
-    enhanced = estimate / max(estimate.abs().max().item(), 1)
-    np_enhanced = np.squeeze(enhanced.detach().squeeze(0).cpu().numpy())
-    write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
+    write(estimate.to('cpu'), out_file, sr=16000)
 
 
 if __name__ == '__main__':
@@ -391,36 +201,22 @@ if __name__ == '__main__':
                         help='Hidden size for dns model.')
     parser.add_argument('-d', '--depth', type=int, required=False, default=4,
                         help='Model depth')
-    parser.add_argument('-f', '--frame_length', type=int, required=False, default=480, help='frame length value')
-    parser.add_argument('-b', '--resample_buffer', type=int, required=False, default=64, help='resample buffer value')
-    parser.add_argument('-s', '--stride', type=int, required=False, default=64, help='Stride value')
+    parser.add_argument('-l', '--total_length', type=int, required=False, default=362, help='Total frame length')
+    parser.add_argument('-b', '--resample_buffer', type=int, required=False, default=128, help='resample buffer value')
+    parser.add_argument('-s', '--stride', type=int, required=False, default=128, help='Stride value')
     parser.add_argument('-r', '--recurse', type=bool, required=False, default=True,
                         help='Recurse noisy audio directory.')
-    parser.add_argument('-v', '--variance', action='store_true',
-                        help='True if you test with a model that includes variance')
 
     args = parser.parse_args()
     onnx_model_file = args.model
     noisy_path = args.noisy_path
     out_path = args.out_path
-    hidden = args.hidden_size
-    depth = args.depth
-    frame_length = args.frame_length
-    resample_buffer = args.resample_buffer
-    stride = args.stride
+    hidden = args.hidden_size  # don't change this
+    depth = args.depth  # don't change this
+    total_length = args.total_length  # don't change this
+    resample_buffer = args.resample_buffer  # don't change this
+    stride = args.stride  # don't change this
     recurse = args.recurse
-    with_variance = args.variance
-
-    '''
-    if depth == 4:
-        frame_length = 480
-        resample_buffer = 64
-        stride = 64
-    else:
-        frame_length = 661  # depth = 5
-        resample_buffer = 256  # depth = 5
-        stride = 256  # depth = 5
-    '''
 
     if os.path.isfile(noisy_path):
         noisy, sr = torchaudio.load(str(noisy_path))
@@ -430,10 +226,7 @@ if __name__ == '__main__':
         parent_out_dir = os.path.dirname(out_path)
         if not os.path.exists(parent_out_dir):
             os.mkdir(parent_out_dir)
-        if with_variance:
-            test_audio_denoising_with_variance(noisy, onnx_model_file, hidden, out_path, depth)
-        else:
-            test_audio_denoising(noisy, onnx_model_file, hidden, out_path, depth)
+        denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, out_path)
     else:
         if not os.path.exists(out_path):
             os.mkdir(out_path)
@@ -445,9 +238,5 @@ if __name__ == '__main__':
             noisy, sr = torchaudio.load(str(noisy_f))
             print(f"inference starts for {noisy_f}")
 
-            if with_variance:
-                test_audio_denoising_with_variance(noisy, onnx_model_file, hidden, out_file, depth)
-            else:
-                test_audio_denoising(noisy, onnx_model_file, hidden, out_file, depth)
-
+            denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, out_file)
             print(f"inference done for {noisy_f}.")

@@ -1,21 +1,14 @@
 import argparse
-import math
 
-import numpy as np
-import onnx
-import onnxruntime
 import torch
-from denoiser.demucs import fast_conv
 from denoiser.pretrained import dns48, dns64
-from denoiser.resample import downsample2, upsample2
-from torch import nn
 
 from demucs_streamer import DemucsOnnxStreamerTT
 from denoiser_inference import init_denoiser_model_from_file
 
 
-def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False,
-                         opset_version=13):
+def convert_stream_model(onnx_model_path, torch_model_path=None, use_dns_48=False, use_dns64=False,
+                         opset_version=14):
     if use_dns_48:
         model = dns48()
     elif torch_model_path is not None:
@@ -26,20 +19,14 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
         model = dns48()
     model.eval()
     streamer = DemucsOnnxStreamerTT(model, dry=0)
-    depth = streamer.demucs.depth
-    streamer.eval()
-    print(f"total length: {streamer.total_length},"
-          f"resample buffer: {streamer.resample_buffer} , "
-          f"stride: {streamer.stride},"
-          f"depth: {depth}",
-          f"hidden: {streamer.demucs.hidden}")
-
-    # x = torch.randn(1, streamer.total_length)
-    x = torch.randn(1, 1024)
-
+    frame = torch.randn(1, streamer.stride, dtype=torch.float32)
+    frame_buffer = torch.zeros(1, streamer.total_length, dtype=torch.float32)
     frame_num = torch.tensor([2])
-    variance_tensor = torch.tensor([0.0], dtype=torch.float32)
     hidden = streamer.demucs.hidden
+    depth = streamer.demucs.depth
+    h0 = torch.zeros((2, 1, hidden * 2 ** (depth - 1)), dtype=torch.float32)
+    c0 = torch.zeros((2, 1, hidden * 2 ** (depth - 1)), dtype=torch.float32)
+    variance_tensor = torch.tensor([0.0], dtype=torch.float32)
 
     if depth == 4:
         conv_state_sizes = [
@@ -66,29 +53,28 @@ def convert_stream_model(onnx_tt_model_path, torch_model_path=None, use_dns_48=F
 
     conv_state_list = [torch.randn(size) for size in conv_state_sizes]
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
-    lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    resample_input_frame = torch.randn(1, streamer.resample_buffer)
-    resample_out_frame = torch.randn(1, streamer.resample_buffer)
-    print(streamer.resample_buffer)
+    resample_input_frame = torch.zeros(1, streamer.resample_buffer)
+    resample_out_frame = torch.zeros(1, streamer.resample_buffer)
+
+    input_names = ['input', 'frame_buffer', 'frame_num', 'variance', 'resample_input_frame', 'resample_out_frame', 'h0',
+                   'c0', 'conv_state']
+
+    output_names = ['output', 'out_frame_buffer', 'frame_num', 'variance', 'resample_input_frame', 'resample_out_frame',
+                    'h0', 'c0', 'conv_state']
+
+    # Export the model
     with torch.no_grad():
-        input_names = ['input', 'frame_num', 'variance', 'resample_input_frame', 'resample_out_frame',
-                       'conv_state', 'lstm_state_1', 'lstm_state_2']
-
-        output_names = ['output', 'frame_num', 'variance', 'resample_input_frame',
-                        'resample_out_frame', 'conv_state', 'lstm_state_1', 'lstm_state_2']
-
-        torch.onnx.export(streamer,
-                          (x, frame_num, variance_tensor, resample_input_frame, resample_out_frame,
-                           conv_state, lstm_state_1, lstm_state_2),
-                          onnx_tt_model_path,
+        torch.onnx.export(streamer,  # model being run
+                          (
+                              frame, frame_buffer, frame_num, variance_tensor, resample_input_frame, resample_out_frame,
+                              h0,
+                              c0, conv_state),
+                          # model input (or a tuple for multiple inputs)
+                          onnx_model_path,  # where to save the model (can be a file or file-like object)
                           verbose=True,
                           opset_version=opset_version,
-                          input_names=input_names,
-                          output_names=output_names,
-                          dynamic_axes={'input': {0: 'channel', 1: 'sequence_length'},
-                                        # variable length axes
-                                        'output': {0: 'channel', 1: 'sequence_length'}})
+                          input_names=input_names,  # the model's input names
+                          output_names=output_names)  # the model's output names)
 
 
 if __name__ == '__main__':

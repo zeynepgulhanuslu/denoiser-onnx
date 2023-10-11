@@ -14,7 +14,7 @@ Aşağıdaki gibi çalıştırabilirsiniz.
 
 ```bash
 python denoiser_stream_onnx_test.py -m ./dns48_depth=4_stride=128.onnx -n audio-wav-16k 
--o enhanced_dir -b 128 -s 128 -f 480 -v
+-o enhanced_dir 
 ```
 
 zip modeli bir miktar daha ufak, ikisini de deneyebilirsiniz.

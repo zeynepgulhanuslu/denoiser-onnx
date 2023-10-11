@@ -1,29 +1,10 @@
 import math
+import time
 
-import numpy as np
 import torch
 from denoiser.demucs import fast_conv
 from denoiser.resample import downsample2, upsample2
 from torch import nn
-
-
-def extend_input_frame_shape(input_frame, length):
-    """Extends the input frame shape from torch.Size([1, 128]) to torch.Size([1, 480]).
-
-    Args:
-      input_frame: A PyTorch tensor of shape torch.Size([1, 128]).
-
-    Returns:
-      A PyTorch tensor of shape torch.Size([1, 480]).
-    """
-    extend_length = length - input_frame.shape[1]
-    # Create a zero tensor of shape 1, length (the difference between extended length and current length).
-    zeros = torch.zeros(1, extend_length)
-
-    # Concatenate the two tensors along the first dimension.
-    extended_input_frame = torch.cat((input_frame, zeros), dim=1)
-
-    return extended_input_frame
 
 
 class DemucsOnnxStreamerTT(nn.Module):
@@ -44,8 +25,15 @@ class DemucsOnnxStreamerTT(nn.Module):
             kept for resampling.
     """
 
-    def __init__(self, demucs, dry=0, num_frames=1, resample_lookahead=64, resample_buffer=256):
+    def __init__(self, demucs,
+                 dry=0,
+                 num_frames=1,
+                 resample_lookahead=64,
+                 resample_buffer=256):
+
         super().__init__()
+
+        device = next(iter(demucs.parameters())).device
         self.demucs = demucs
         self.lstm_state = None
         self.conv_state = None
@@ -56,18 +44,21 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.frame_length = demucs.valid_length(1) + demucs.total_stride * (num_frames - 1)
         self.total_length = self.frame_length + self.resample_lookahead
         self.stride = demucs.total_stride * num_frames
-        self.resample_in = torch.zeros(demucs.chin, resample_buffer)
-        self.resample_out = torch.zeros(demucs.chin, resample_buffer)
+        self.resample_in = torch.zeros(demucs.chin, resample_buffer, device=device)
+        self.resample_out = torch.zeros(demucs.chin, resample_buffer, device=device)
+
         self.frames = 0
         self.total_time = 0
         self.variance = 0
-        self.pending = torch.zeros(demucs.chin, 0)
+        self.pending = torch.zeros(demucs.chin, 0, device=device)
 
         bias = demucs.decoder[0][2].bias
         weight = demucs.decoder[0][2].weight
         chin, chout, kernel = weight.shape
         self._bias = bias.view(-1, 1).repeat(1, kernel).view(-1, 1)
         self._weight = weight.permute(1, 2, 0).contiguous()
+
+        self.frame = torch.zeros(1, self.total_length)
 
     def reset_time_per_frame(self):
         self.total_time = 0
@@ -85,100 +76,82 @@ class DemucsOnnxStreamerTT(nn.Module):
         """
         self.lstm_state = None
         self.conv_state = None
-        self.initial_frame = 0
         pending_length = self.pending.shape[1]
-        padding = torch.zeros(self.demucs.chin, self.total_length)
+        padding = torch.zeros(self.demucs.chin, self.total_length, device=self.pending.device)
         frame_num = self.frames if self.frames != 0 else torch.tensor([1])
         variance = self.variance if self.variance != 0 else torch.tensor([0.0])
-        out, frame_num, variance_out, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
-            self.forward(padding, frame_num, variance, self.resample_in, self.resample_out, None, None)
+        input_buffer = torch.zeros(1, self.total_length)
+        out, out_frame_buffer, frame_num, variance_out, resample_in, resample_out, new_conv_state, new_lstm_state_1, new_lstm_state_2 = \
+            self.forward(padding, input_buffer, frame_num, variance, self.resample_in, self.resample_out, None, None)
 
         return out[:, :pending_length]
 
-    def forward(self, frame, frame_num, variance, resample_input_frame, resample_out_frame,
-                conv_state=None, lstm_state_1=None, lstm_state_2=None):
+    def forward(self, in_frame, frame_buffer, frame_num, variance, resample_input_frame, resample_out_frame, h0, c0,
+                conv_state=None):
         """
-        Apply the model to mix using true real-time evaluation.
-        Normalization is done online, as is the resampling.
+        Apply the model to mix using true real time evaluation.
+        Normalization is done online as is the resampling.
         """
+        lstm_state = (h0, c0)
         self.frames = frame_num
+        self.lstm_state = lstm_state
+        self.conv_state = conv_state
+        frame_buffer = torch.cat((frame_buffer[:, self.stride:], in_frame), 1)
+        frame = frame_buffer
+        if frame_num < 3:
+            print(f'in frame: {in_frame}')
+            print(f'input buffer: {frame_buffer}')
+        self.frame = frame
+        begin = time.time()
         demucs = self.demucs
         resample_buffer = self.resample_buffer
         stride = self.stride
         resample = demucs.resample
-        self.lstm_state = (lstm_state_1, lstm_state_2)
-        self.conv_state = conv_state
-        print(f'streamer total length : {self.total_length}, {self.total_length + self.stride}')
-        print(f'streamer frame length : {self.frame_length}')
 
+        ## start from here
         dry_signal = frame[:, :stride]
         self.variance = variance
         if demucs.normalize:
             mono = frame.mean(0)
             variance_val = (mono ** 2).mean()
-            print(f'local variance val: {variance_val}')
-            print(f'self frames: {self.frames}')
-            print(f'(1 - 1 / self.frames): {(1 - 1 / self.frames)}')
-            print(f'(1 - 1 / self.frames) * self.variance: {(1 - 1 / self.frames) * self.variance}')
             self.variance = variance_val / self.frames + (1 - 1 / self.frames) * self.variance
             frame = frame / (demucs.floor + math.sqrt(self.variance))
-        print(f"frame shape before padding : {frame.shape}")
         self.resample_in = resample_input_frame
-
         padded_frame = torch.cat([self.resample_in, frame], dim=-1)
         self.resample_in[:] = frame[:, stride - resample_buffer:stride]
         frame = padded_frame
-        print(f'frame shape after padding:{frame.shape}')
 
         if resample == 4:
             frame = upsample2(upsample2(frame))
         elif resample == 2:
             frame = upsample2(frame)
-
-        print(f'frame shape after upsample:{frame.shape}')
-        frame = frame[:, resample * resample_buffer:]  # remove pre-sampling buffer
-        print(f"frame shape after resample 1: {frame.shape}")
+        frame = frame[:, resample * resample_buffer:]  # remove pre sampling buffer
         frame = frame[:, :resample * self.frame_length]  # remove extra samples after window
-        print(f"frame shape after resample 2: {frame.shape}")
 
-        frame = extend_input_frame_shape(frame, resample * self.frame_length)
-        print(f"frame shape after extension : {frame.shape}")
-        out, extra, new_conv_state, new_lstm_state_1, new_lstm_state_2 = self._separate_frame(frame,
-                                                                                              conv_state,
-                                                                                              lstm_state_1,
-                                                                                              lstm_state_2)
-        print(f'output of separate frame:{out.shape}')
+        out, extra, new_conv_state, new_lstm_state_1, new_lstm_state_2 = self._separate_frame(frame, conv_state, h0, c0)
+
         self.resample_out = resample_out_frame
-
-        print(f"conv state shape: {self.conv_state.shape}")
-        print(f"lstm state 1 shape: {lstm_state_1.shape}")
-        print(f"lstm state 2 shape: {lstm_state_2.shape}")
-        print(f"resample shape : {self.resample_out.shape}")
         padded_out = torch.cat([self.resample_out, out, extra], 1)
-        print(f'padded out shape: {padded_out.shape}')
-        self.resample_out[:] = out[:, -resample_buffer:]  # this will updated also.
+        self.resample_out[:] = out[:, -resample_buffer:]
         if resample == 4:
             out = downsample2(downsample2(padded_out))
         elif resample == 2:
             out = downsample2(padded_out)
         else:
             out = padded_out
-        print(f'out with resample: {out.shape}')
+
         out = out[:, resample_buffer // resample:]
         out = out[:, :stride]
-        print(f'out shape: {out.shape}')
 
         if demucs.normalize:
             out *= math.sqrt(self.variance)
-
         out = self.dry * dry_signal + (1 - self.dry) * out
-        print(f'out shape after dry: {out.shape}')
-
         self.conv_state = new_conv_state
-        return out, frame_num, self.variance, self.resample_in, self.resample_out, \
-               new_conv_state, new_lstm_state_1, new_lstm_state_2
 
-    def _separate_frame(self, frame, conv_state=None, lstm_state_1=None, lstm_state_2=None):
+        return out, frame_buffer, frame_num, self.variance, self.resample_in, self.resample_out, new_lstm_state_1, \
+               new_lstm_state_2, new_conv_state
+
+    def _separate_frame(self, frame, conv_state, h0, c0):
         demucs = self.demucs
         skips = []
         next_state = []
@@ -215,17 +188,15 @@ class DemucsOnnxStreamerTT(nn.Module):
 
         conv_state_list = [conv_state[..., conv_state_sizes_cumsum[i]:conv_state_sizes_cumsum[i + 1]].view(size) for
                            i, size in enumerate(conv_state_sizes)]
-
-        first = True if self.frames == 0 else False
-        print(f"first {first}")
         self.conv_state = conv_state
+        first = True if self.frames == 0 else False
         stride = self.stride * demucs.resample
         x = frame[None]
-        print(f"x shape 1:{x.shape}")
         for idx, encode in enumerate(demucs.encoder):
             stride //= demucs.stride
             length = x.shape[2]
             if idx == demucs.depth - 1:
+                # This is sligthly faster for the last conv
                 x = fast_conv(encode[0], x)
                 x = encode[1](x)
                 x = fast_conv(encode[2], x)
@@ -238,7 +209,6 @@ class DemucsOnnxStreamerTT(nn.Module):
                     missing = tgt - prev.shape[-1]
                     offset = length - demucs.kernel_size - demucs.stride * (missing - 1)
                     x = x[..., offset:]
-                print(f'dtype of x: {x.dtype}')
                 x = encode[1](encode[0](x))
                 x = fast_conv(encode[2], x)
                 x = encode[3](x)
@@ -248,10 +218,12 @@ class DemucsOnnxStreamerTT(nn.Module):
             skips.append(x)
 
         x = x.permute(2, 0, 1)
-        x, new_lstm_state = demucs.lstm(x, (lstm_state_1, lstm_state_2))
-        print(f"new lstm state:{new_lstm_state[0].shape, new_lstm_state[1].shape}")
+        x, new_lstm_state = demucs.lstm(x, (h0, c0))
         x = x.permute(1, 2, 0)
-
+        # In the following, x contains only correct samples, i.e. the one
+        # for which each time position is covered by two window of the upper layer.
+        # extra contains extra samples to the right, and is used only as a
+        # better padding for the online resampling.
         extra = None
         for idx, decode in enumerate(demucs.decoder):
             skip = skips.pop(-1)
@@ -273,15 +245,10 @@ class DemucsOnnxStreamerTT(nn.Module):
 
             if not first:
                 prev = conv_state_list.pop(0)
-
                 x[..., :demucs.stride] += prev
             if idx != demucs.depth - 1:
                 x = decode[3](x)
                 extra = decode[3](extra)
-
         new_conv_state = torch.cat([t.view(1, -1) for t in next_state], dim=1)
         self.conv_state = new_conv_state
-        for cs in self.conv_state:
-            print(cs.shape)
-
         return x[0], extra[0], new_conv_state, new_lstm_state[0], new_lstm_state[1]

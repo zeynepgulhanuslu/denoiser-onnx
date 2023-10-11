@@ -45,6 +45,7 @@ def denoise_audio_streaming(audio_file, frame_size, enhanced_file):
     total_frame = 0
     states_onnx = torch.zeros(45304, device='cpu')
     atten_lim_db = torch.tensor(0.0, device='cpu')
+    rtf_exceed_count = 0
     for i, chunk in enumerate(chunked_audio):
         start_time = time.time()
         frame = chunk.squeeze(0)
@@ -61,6 +62,9 @@ def denoise_audio_streaming(audio_file, frame_size, enhanced_file):
         rtf = inference_time / frame_in_ms
         print(f"inference time in ms for frame {i + 1}, noisy frame in ms: {frame_in_ms}, "
               f"{inference_time} ms. rtf: {rtf}")
+        if rtf >= 1:
+            rtf_exceed_count += 1
+            print(f'rtf exceed real time requirements: {rtf}, inference time: {inference_time} ms')
 
         out_enhanced_frame = output_onnx[0]
         out_states = output_onnx[1]
@@ -71,8 +75,8 @@ def denoise_audio_streaming(audio_file, frame_size, enhanced_file):
 
     print(f"average inference time in ms: {average_inference_time:.6f}")
     print(f"average rtf : {average_inference_time / frame_in_ms:.6f}")
-
-
+    print(f'exceed rtf count: {rtf_exceed_count}')
+    print(f'exceed rtf ratio: {rtf_exceed_count / total_frame :.2f}')
     enhanced_audio = torch.cat(output_frames).unsqueeze(0)
     estimate = enhanced_audio.detach().cpu()
 
@@ -96,8 +100,10 @@ if __name__ == '__main__':
     noisy_path = args.noisy_path
     out_path = args.out_path
     block_len = args.block_len
+
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    sess_options.optimized_model_filepath = onnx_model_file
     sess_options.intra_op_num_threads = 1
     sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 

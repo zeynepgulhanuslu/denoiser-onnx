@@ -4,10 +4,14 @@ import numpy as np
 import onnx
 import onnxruntime
 import torch
-from onnxruntime.quantization import quantize_dynamic, QuantType, quantize_static
+from onnxruntime.quantization import quantize_dynamic, QuantType
 from pathlib import Path
-
+import numpy.testing as np_testing
 from denoiser_inference import to_numpy
+
+seed = 2036
+torch.manual_seed(seed)
+np.random.seed(seed)
 
 
 def convert_quantize_from_onnx(onnx_model_path, quantized_onnx_model_path):
@@ -44,27 +48,54 @@ def convert_quantize_from_streamtt_onnx(onnx_model_path, quantized_onnx_model_pa
     q_model = onnx.load(quantized_onnx_model_path)
 
     onnx.checker.check_model(q_model)
-
-    # Load the model
-    quantized_session = onnxruntime.InferenceSession(quantized_onnx_model_path)
+    quantize_session = onnxruntime.InferenceSession(quantized_onnx_model_path)
     ort_session = onnxruntime.InferenceSession(onnx_model_path)
-    # Assume your model expects a single float32 tensor of shape (1, 3, 224, 224)
-    # Here's how you might create a dummy tensor of zeroes of the right type and shape
-    variance_tensor = torch.tensor([0.0], dtype=torch.float32)
+
+    estimate_onnx = test_denoise_with_onnx(depth, frame_length, hidden, ort_session, quantize_session, resample_buffer,
+                                      stride)
+    estimate_quantized = test_denoise_with_onnx(depth, frame_length, hidden, quantize_session, quantize_session, resample_buffer,
+                                      stride)
+
+    np.testing.assert_allclose(to_numpy(estimate_quantized), to_numpy(estimate_onnx), rtol=1e-03, atol=1e-05)
+    print("Exported model has been tested with ONNXRuntime, and the result looks good!")
+
+
+def test_denoise_with_onnx(depth, frame_length, hidden, ort_session, quantize_session, resample_buffer, stride):
     input_name = ort_session.get_inputs()[0].name
-    frame_num_name = ort_session.get_inputs()[1].name
-    variance_input_name = ort_session.get_inputs()[2].name
-    resample_input_frame_name = ort_session.get_inputs()[3].name
-    resample_out_frame_name = ort_session.get_inputs()[4].name
-    conv_state_name = ort_session.get_inputs()[5].name
-    lstm_state_1_name = ort_session.get_inputs()[6].name
-    lstm_state_2_name = ort_session.get_inputs()[7].name
-
-    lstm_state_1 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-    lstm_state_2 = torch.randn(2, 1, hidden * 2 ** (depth - 1))
-
+    frame_buffer_name = ort_session.get_inputs()[1].name
+    frames_input_name = ort_session.get_inputs()[2].name
+    variance_input_name = ort_session.get_inputs()[3].name
+    resample_input_name = ort_session.get_inputs()[4].name
+    resample_output_name = ort_session.get_inputs()[5].name
+    h0_input_name = ort_session.get_inputs()[6].name
+    c0_input_name = ort_session.get_inputs()[7].name
+    conv_state_name = ort_session.get_inputs()[8].name
+    output_name = ort_session.get_outputs()[0].name
+    out_buffer_name = ort_session.get_outputs()[1].name
+    frames_output_name = ort_session.get_outputs()[2].name
+    variance_output_name = ort_session.get_outputs()[3].name
+    out_resample_input_name = ort_session.get_outputs()[4].name
+    out_resample_out_name = ort_session.get_outputs()[5].name
+    h0_output_name = ort_session.get_outputs()[6].name
+    c0_output_name = ort_session.get_outputs()[7].name
+    out_conv_state_name = ort_session.get_outputs()[8].name
+    output_names = [output_name,
+                    out_buffer_name,
+                    frames_output_name,
+                    variance_output_name,
+                    out_resample_input_name,
+                    out_resample_out_name,
+                    h0_output_name,
+                    c0_output_name,
+                    out_conv_state_name]
+    frame_buffer = np.zeros((1, frame_length), dtype=np.float32)
+    frames_input = torch.tensor([1])  # Wrap the scalar inside a tensor
+    h0 = np.zeros((2, 1, hidden * 2 ** (depth - 1)), dtype=np.float32)
+    c0 = np.zeros((2, 1, hidden * 2 ** (depth - 1)), dtype=np.float32)
+    variance = torch.tensor([0.0], dtype=torch.float32)
+    resample_input_frame = np.zeros((1, resample_buffer), dtype=np.float32)
+    resample_out_frame = np.zeros((1, resample_buffer), dtype=np.float32)
     if depth == 4:
-
         conv_state_sizes = [
             (1, hidden, 148),
             (1, hidden * 2, 36),
@@ -88,89 +119,42 @@ def convert_quantize_from_streamtt_onnx(onnx_model_path, quantized_onnx_model_pa
         ]
     conv_state_list = [torch.zeros(size) for size in conv_state_sizes]
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
-
-    output_name = ort_session.get_outputs()[0].name
-    out_frame = ort_session.get_outputs()[1].name
-    out_variance_name = ort_session.get_outputs()[2].name
-    out_resample_in_frame = ort_session.get_outputs()[3].name
-    out_resample_frame = ort_session.get_outputs()[4].name
-    out_conv = ort_session.get_outputs()[5].name
-    out_lstm_1 = ort_session.get_outputs()[6].name
-    out_lstm_2 = ort_session.get_outputs()[7].name
-
-    frame_num = torch.tensor([1])
-
-    noisy = torch.randn(1, frame_length * 2)
-
-    resample_input_frame = torch.zeros(1, resample_buffer)
-    resample_out_frame = torch.zeros(1, resample_buffer)
+    print("testing with onnx model")
+    noisy = torch.randn(1, frame_length * 3, dtype=torch.float32)
+    print(f"noisy shape: {noisy.shape}")
     with torch.no_grad():
         pending = noisy
         outs = []
-        while pending.shape[1] >= frame_length:
-            frame = pending[:, :frame_length]
-            frame_np = to_numpy(frame)
+        while pending.shape[1] >= stride:
+            frame = pending[:, :stride].numpy()
+            input_dict = {input_name: frame,
+                          frame_buffer_name: frame_buffer,
+                          frames_input_name: to_numpy(frames_input),
+                          variance_input_name: to_numpy(variance),
+                          resample_input_name: resample_input_frame,
+                          resample_output_name: resample_out_frame,
+                          h0_input_name: h0,
+                          c0_input_name: c0,
+                          conv_state_name: to_numpy(conv_state)}
+            quantize_session
+            out, out_frame_buffer, out_frame_num, out_variance, out_resample_input_frame, out_resample_out_frame, \
+            out_h, out_c, out_conv_state = ort_session.run(
+                output_names,
+                input_dict)
 
-            input_values = {
-                input_name: frame_np,
-                frame_num_name: to_numpy(frame_num),
-                variance_input_name: to_numpy(variance_tensor),
-                resample_input_frame_name: to_numpy(resample_input_frame),
-                resample_out_frame_name: to_numpy(resample_out_frame),
-                conv_state_name: to_numpy(conv_state),
-                lstm_state_1_name: to_numpy(lstm_state_1),
-                lstm_state_2_name: to_numpy(lstm_state_2)
-            }
-
-            print(f"frame number: {frame_num}, frame numpy shape: {frame_np.shape},"
-                  f" dtype: {frame_np.dtype}")
-
-            print(f"frame number: {frame_num}, frame tensor shape: {frame.shape}, dtype: {frame.dtype}")
-
-            out = ort_session.run([output_name, out_frame, out_variance_name, out_resample_in_frame,
-                                   out_resample_frame, out_conv, out_lstm_1, out_lstm_2],
-                                  input_values)
-
-            # onnx out#
-            output_np = out[0]
-            variance_input = out[2]
-            resample_input_frame = out[3]
-            resample_out_frame = out[4]
-            out_conv_tensor = torch.from_numpy(out[5])
-
-            print(f"out conv tensor shape {out_conv_tensor.shape}")
-            print("---------------------------------------------------")
-            conv_state = out_conv_tensor
-            lstm_state_1 = out[6]
-            lstm_state_2 = out[7]
-            outs.append(torch.from_numpy(output_np))
+            outs.append(torch.from_numpy(out))
+            frame_buffer = out_frame_buffer
+            variance = out_variance
+            resample_input_frame = out_resample_input_frame
+            resample_out_frame = out_resample_out_frame
+            h0 = out_h
+            c0 = out_c
+            conv_state = out_conv_state
             pending = pending[:, stride:]
-            frame_num.add_(1)
-
-        if pending.shape[1] > 0:
-            last_frame = torch.cat([pending, torch.zeros_like(pending)[:, :frame_length - pending.shape[1]]],
-                                   dim=1)
-
-            input_values = {
-                input_name: to_numpy(last_frame),
-                frame_num_name: to_numpy(frame_num),
-                variance_input_name: to_numpy(variance_input),
-                resample_input_frame_name: to_numpy(resample_input_frame),
-                resample_out_frame_name: to_numpy(resample_out_frame),
-                conv_state_name: to_numpy(conv_state),
-                lstm_state_1_name: to_numpy(lstm_state_1),
-                lstm_state_2_name: to_numpy(lstm_state_2)
-            }
-
-            out = ort_session.run([output_name, out_frame, out_variance_name, out_resample_in_frame, out_resample_frame,
-                                   out_conv, out_lstm_1, out_lstm_2], input_values)
-            output_np = out[0]
-            outs.append(torch.from_numpy(output_np))
-
+            print(f"second pending result {pending.shape}")
+            frames_input.add_(1)
         estimate = torch.cat(outs, 1)
-    print(f"onnx out shape: {estimate.shape}, type: {type(estimate)}")
-
-    print("Exported model has been tested with ONNXRuntime, and the result looks good!")
+    return estimate
 
 
 if __name__ == '__main__':
@@ -183,9 +167,9 @@ if __name__ == '__main__':
                         help='Hidden size for dns model.')
     parser.add_argument('-d', '--depth', type=int, required=False, default=4,
                         help='Model depth')
-    parser.add_argument('-f', '--frame_length', type=int, required=False, default=480, help='frame length value')
-    parser.add_argument('-b', '--resample_buffer', type=int, required=False, default=64, help='resample buffer value')
-    parser.add_argument('-stride', '--stride', type=int, required=False, default=64, help='Stride value')
+    parser.add_argument('-f', '--frame_length', type=int, required=False, default=362, help='frame length value')
+    parser.add_argument('-b', '--resample_buffer', type=int, required=False, default=128, help='resample buffer value')
+    parser.add_argument('-stride', '--stride', type=int, required=False, default=128, help='Stride value')
 
     args = parser.parse_args()
     onnx_model_file = args.model
@@ -203,4 +187,3 @@ if __name__ == '__main__':
     else:
         convert_quantize_from_onnx(onnx_model_file, quantized_model_file)
     # quantize onnx stream model
-
