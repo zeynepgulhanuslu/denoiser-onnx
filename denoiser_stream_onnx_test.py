@@ -50,7 +50,7 @@ def is_zip_file(file_path):
     return file_extension.lower() == ".zip"
 
 
-def denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, out_file):
+def denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, sr, out_file):
     ort_session = onnxruntime.InferenceSession(onnx_model_file)
     # onnx model input names:
     input_name = ort_session.get_inputs()[0].name
@@ -119,9 +119,9 @@ def denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, r
     conv_state = torch.cat([t.view(1, -1) for t in conv_state_list], dim=1)
     total_frame = 0
     total_inference_time = 0
-    frame_in_ms = (total_length / 16000) * 1000  # her bir frame in ms cinsinden uzunluğu
-    total_duration = (len(noisy) / 16000) * 1000
-
+    frame_in_ms = (total_length / sr) * 1000  # her bir frame in ms cinsinden uzunluğu
+    total_duration = (len(noisy) / sr) * 1000
+    rtf_exceed_count = 0
     with torch.no_grad():
         pending = noisy
         outs = []
@@ -151,6 +151,8 @@ def denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, r
             rtf = inference_time / frame_in_ms
             print(f"inference time in ms for frame {total_frame + 1}, noisy frame in ms: {frame_in_ms}, "
                   f"{inference_time} ms. rtf: {rtf}")
+            if rtf > 1:
+                rtf_exceed_count += 1
             outs.append(torch.from_numpy(out))  # add out enhanced frame to list
             # update inputs with results
             frame_buffer = out_frame_buffer
@@ -179,15 +181,21 @@ def denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, r
             rtf = inference_time / frame_in_ms
             print(f"inference time in ms for frame {total_frame + 1}, frame in ms: {frame_in_ms}, "
                   f"{inference_time} ms. rtf: {rtf}")
+            if rtf > 1:
+                rtf_exceed_count += 1
             outs.append(torch.from_numpy(out[0]))
             if inference_time > 0.1:
                 total_frame += 1
     estimate = torch.cat(outs, 1)
 
     average_inference_time = total_inference_time / total_frame
-    print(f"average inference time in ms: {average_inference_time:.6f}")
-    print(f"average rtf : {average_inference_time / frame_in_ms:.6f}")
-    write(estimate.to('cpu'), out_file, sr=16000)
+    print(f"average inference time in ms: {average_inference_time:.4f}")
+    avg_rtf = average_inference_time / frame_in_ms
+    print(f"average rtf : {avg_rtf :.4f}")
+    print(f"number of frames that exceed rtf: {rtf_exceed_count}")
+    print(f"average exceed frames : {rtf_exceed_count / total_frame :.4f}")
+    write(estimate.to('cpu'), out_file, sr=sr)
+    return average_inference_time, avg_rtf, rtf_exceed_count, total_frame
 
 
 if __name__ == '__main__':
@@ -204,6 +212,7 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--total_length', type=int, required=False, default=362, help='Total frame length')
     parser.add_argument('-b', '--resample_buffer', type=int, required=False, default=128, help='resample buffer value')
     parser.add_argument('-s', '--stride', type=int, required=False, default=128, help='Stride value')
+    parser.add_argument('-sr', '--sample-rate', type=int, required=False, default=16000, help='Sample rate value')
     parser.add_argument('-r', '--recurse', type=bool, required=False, default=True,
                         help='Recurse noisy audio directory.')
 
@@ -216,27 +225,55 @@ if __name__ == '__main__':
     total_length = args.total_length  # don't change this
     resample_buffer = args.resample_buffer  # don't change this
     stride = args.stride  # don't change this
+    sample_rate = args.sample_rate
     recurse = args.recurse
 
     if os.path.isfile(noisy_path):
         noisy, sr = torchaudio.load(str(noisy_path))
-
+        duration = noisy.shape[1] / sr
         # noisy, sr = torchaudio.load(str(audio_file))
         print(f"inference starts for {noisy_path}")
         parent_out_dir = os.path.dirname(out_path)
         if not os.path.exists(parent_out_dir):
             os.mkdir(parent_out_dir)
-        denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, out_path)
+        denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, sample_rate,
+                      out_path)
     else:
+
         if not os.path.exists(out_path):
             os.mkdir(out_path)
 
         noisy_files = librosa.util.find_files(noisy_path, ext='wav', recurse=recurse)
+        audio_file_count = len(noisy_files)
+        total_avg_rtf = 0
+        total_duration = 0
+        total_frame = 0
+        rtf_exceed_total = 0
+        total_avg_inference = 0
         for noisy_f in noisy_files:
             name = os.path.basename(noisy_f)
             out_file = os.path.join(out_path, name)
             noisy, sr = torchaudio.load(str(noisy_f))
+            duration = noisy.shape[1] / sr
             print(f"inference starts for {noisy_f}")
+            total_duration += duration
+            avg_inference_time, avg_rtf, rtf_exceed_count, frame_count = denoise_audio(noisy, onnx_model_file,
+                                                                                       hidden, depth, stride,
+                                                                                       total_length,
+                                                                                       resample_buffer, sample_rate,
+                                                                                       out_file)
+            total_avg_inference += avg_inference_time
 
-            denoise_audio(noisy, onnx_model_file, hidden, depth, stride, total_length, resample_buffer, out_file)
+            rtf_exceed_total += rtf_exceed_count
+            total_frame += frame_count
+            total_avg_rtf += avg_rtf
+
             print(f"inference done for {noisy_f}.")
+        print(f"total duration in minutes : {total_duration / 60:.3f}")
+        print(f"total duration in hours : {total_duration / 3600:.3f}")
+        print(f"avg rtf for all files : {total_avg_rtf / audio_file_count:.3f}")
+        print(f"when rtf exceed 1 --> frame count : {rtf_exceed_total}, total frame count: {total_frame},"
+              f"ratio : {rtf_exceed_total / total_frame:.6f}")
+        print(f"total audio files:{audio_file_count}")
+        print(f"Audio duration avg: {total_duration / audio_file_count}")
+        print(f"Avg inference time: {total_avg_inference / audio_file_count}")

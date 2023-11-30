@@ -1,6 +1,7 @@
 import math
 import time
 
+import numpy as np
 import torch
 from denoiser.demucs import fast_conv
 from denoiser.resample import downsample2, upsample2
@@ -98,9 +99,7 @@ class DemucsOnnxStreamerTT(nn.Module):
         self.conv_state = conv_state
         frame_buffer = torch.cat((frame_buffer[:, self.stride:], in_frame), 1)
         frame = frame_buffer
-        if frame_num < 3:
-            print(f'in frame: {in_frame}')
-            print(f'input buffer: {frame_buffer}')
+
         self.frame = frame
         begin = time.time()
         demucs = self.demucs
@@ -128,7 +127,8 @@ class DemucsOnnxStreamerTT(nn.Module):
         frame = frame[:, resample * resample_buffer:]  # remove pre sampling buffer
         frame = frame[:, :resample * self.frame_length]  # remove extra samples after window
 
-        out, extra, new_conv_state, new_lstm_state_1, new_lstm_state_2 = self._separate_frame(frame, conv_state, h0, c0)
+        out, extra, new_conv_state, new_lstm_state_1, new_lstm_state_2 =\
+            self._separate_frame(frame, conv_state, h0, c0)
 
         self.resample_out = resample_out_frame
         padded_out = torch.cat([self.resample_out, out, extra], 1)
@@ -147,6 +147,7 @@ class DemucsOnnxStreamerTT(nn.Module):
             out *= math.sqrt(self.variance)
         out = self.dry * dry_signal + (1 - self.dry) * out
         self.conv_state = new_conv_state
+
 
         return out, frame_buffer, frame_num, self.variance, self.resample_in, self.resample_out, new_lstm_state_1, \
                new_lstm_state_2, new_conv_state

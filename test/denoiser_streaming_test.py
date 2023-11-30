@@ -15,7 +15,8 @@ from denoiser_onnx_test import write
 def test_audio_denoising_pytorch(model, audio_file, out_file):
     model.eval()
     streamer = DemucsOnnxStreamerTT(model, dry=0)
-
+    print(f'stride: {streamer.demucs.total_stride}, frame length: {streamer.frame_length}, total frame length: {streamer.demucs.valid_length},'
+          f'resample buffer {streamer.resample_buffer}')
     noisy, sr = torchaudio.load(str(audio_file))
     frame_num = 1
     h = None
@@ -33,7 +34,7 @@ def test_audio_denoising_pytorch(model, audio_file, out_file):
     np_enhanced = np.squeeze(enhanced.detach().squeeze(0).cpu().numpy())
     print(f"out shape: {estimate.shape}, type:{type(estimate)}")
 
-    write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=16000)
+    write(torch.from_numpy(np_enhanced.reshape(1, len(np_enhanced))).to('cpu'), out_file, sr=sr)
 
 
 if __name__ == "__main__":
@@ -62,6 +63,5 @@ if __name__ == "__main__":
     hidden_size = args.hidden_size
     model = init_denoiser_model_from_file(torch_model_path)
     model.eval()
-
 
     test_audio_denoising_pytorch(model, noisy_path,  enhanced_file)
